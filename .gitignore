@@ -11,3 +11,6 @@ wheels/
 
 # Local index
 data/
+
+# Working notes for the coding assistant, kept on this machine only
+CLAUDE.md

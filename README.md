@@ -196,4 +196,9 @@ render folder if you set one up.
 uv run pytest -q
 ```
 
-The tests are fast and load no models. `CLAUDE.md` describes how the code is organised.
+The tests are fast and load no models. The code is in `src/audio_embed/`, one concern per
+module, with the whole page in `web/index.html`.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).

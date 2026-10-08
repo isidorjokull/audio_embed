@@ -3,6 +3,8 @@ name = "audio-embed"
 version = "0.1.0"
 description = "Search a local audio library by description, by similarity and by filters"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "isidorjokull", email = "isidorjokull@gmail.com" }
 ]
