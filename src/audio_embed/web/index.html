@@ -166,6 +166,25 @@
   .hit:hover .like, .hit:focus-within .like, .hit.current .like { visibility: visible; }
   .wave { display: block; width: 100%; height: 44px; margin-top: 6px; cursor: pointer; border-radius: 2px; }
 
+  /* Generating: the panel sits on the desk between the sample and the clips made from it. */
+  .gen { display: grid; gap: 10px; max-width: 940px; margin: 14px 0 6px; padding: 14px 16px; background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; box-shadow: var(--lit), var(--cast); }
+  .gen .filter-name { width: 6.4em; }
+  .gen input[type="text"] { flex: 1; min-width: 12em; padding: 5px 10px; background: var(--well); border: 1px solid var(--rule); border-radius: 5px; box-shadow: var(--sunk); font-size: 14px; }
+  .gen input[type="text"]::placeholder { color: var(--dim); }
+  .gen input[type="text"]:focus { outline: none; border-color: var(--accent-ink); box-shadow: var(--sunk), 0 0 0 3px color-mix(in srgb, var(--accent-ink) 28%, transparent); }
+  .gen .plain { flex: none; font-size: 13px; }
+  .gen-more { display: grid; gap: 10px; }
+  .gen-more[hidden] { display: none; }
+  .gen-go { display: flex; gap: 14px; align-items: center; margin-top: 2px; }
+  .gen-go button[type="submit"] { flex: none; white-space: nowrap; padding: 7px 18px; background: var(--accent); color: var(--on-accent); border: 0; border-radius: 5px; font-weight: 600; box-shadow: inset 0 -2px 0 rgba(0, 0, 0, .14), 0 1px 2px rgba(0, 0, 0, .5); }
+  .gen-go button[type="submit"]:hover { background: var(--accent-lit); }
+  .gen-go button[type="submit"]:disabled { opacity: .55; cursor: default; background: var(--accent); }
+  .gen-says { color: var(--dim); font-size: 13px; overflow-wrap: anywhere; }
+  /* Keep sits where a library file has its bookmark, but it is a word, so it undoes the icon-button sizing. */
+  .votes .keep-clip { width: auto; height: auto; padding: 2px 11px; background: var(--tint); border: 1px solid var(--edge); border-radius: 3px; color: var(--tape); font-size: 13px; white-space: nowrap; opacity: 1; }
+  .votes .keep-clip:hover { border-color: var(--dim); background: var(--raised); }
+  .votes .keep-clip:disabled { color: var(--dim); cursor: default; border-color: var(--rule); background: none; }
+
   .start { margin-top: 36px; }
   .start p { margin: 0 0 12px; color: var(--dim); }
   .start ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
@@ -223,7 +242,7 @@
   </form>
   <div class="ask-row">
     <div class="views" id="views" role="radiogroup" aria-label="Search with"></div>
-    <p class="library"><span id="library"></span><button class="plain" id="find-duplicates" type="button">Find duplicates</button></p>
+    <p class="library"><span id="library"></span><button class="plain" id="generate-text" type="button" hidden title="Make new audio from the text in the search box, with Stable Audio 3 (Shift+Enter in the search box)">Generate from text</button><button class="plain" id="find-duplicates" type="button">Find duplicates</button></p>
   </div>
   <div class="filters" id="filters"></div>
 </header>
@@ -237,6 +256,7 @@
     <div class="deck-name"><strong id="deck-name"></strong><span id="deck-folder"></span></div>
     <span id="clock"></span>
     <button class="action" id="deck-like">Find similar</button>
+    <button class="action" id="deck-generate" hidden title="Make variations of this file with Stable Audio 3 (N)">Generate from this</button>
     <button class="action" id="deck-reveal">Show in Finder</button>
   </div>
 </footer>
@@ -254,7 +274,7 @@ const player = $('player');
 
 let models = [];        // [{name, label, files}]
 let view = 'both';      // a model name, or 'both'
-let query = null;       // {kind: 'text', text}, {kind: 'like', id, name}, {kind: 'collection', name} or {kind: 'duplicates'}
+let query = null;       // {kind: 'text', text}, {kind: 'like', id, name}, {kind: 'collection', name}, {kind: 'duplicates'}, {kind: 'generate', id, name, start} or {kind: 'generate', text}
 let offered = [];       // filter groups from the server: [{kind, values: [{value, count}]}]
 let lengthKey = 'any';  // which of LENGTHS is picked
 let picks = {};         // kind -> Set of picked values
@@ -275,6 +295,9 @@ let wanted = 0;         // the last requested start, kept for a retry
 let converted = false;  // whether the player is on a converted copy of the current file
 let failed = false;     // the current file could not be played even after converting
 const peaks = new Map();
+let canGenerate = false; // Stable Audio 3 has been set up, so files can be generated from
+// What the generate panel is set to. Kept while the page is open, so the next file starts from the same settings.
+const gen = { prompt: '', avoid: '', distance: 'medium', more: false, count: 4, seconds: '', textSeconds: 10, model: 'medium', strength: 1 };
 
 function el(tag, props = {}, ...children) {
   const node = Object.assign(document.createElement(tag), props);
@@ -319,7 +342,8 @@ function drawViews() {
 
 function ask(next) {
   query = next;
-  $('q').value = next.kind === 'text' ? next.text : '';
+  // Generating from text keeps the text in the search box, since that is where it came from.
+  $('q').value = next.kind === 'text' || (next.kind === 'generate' && next.id == null) ? next.text : '';
   naming = null;
   keepAddress();
   drawFilters();
@@ -333,6 +357,8 @@ function keepAddress() {
   if (query && query.kind === 'like') { params.set('like', query.id); params.set('name', query.name); }
   if (query && query.kind === 'collection') params.set('collection', query.name);
   if (query && query.kind === 'duplicates') params.set('duplicates', '1');
+  if (query && query.kind === 'generate' && query.id == null) { params.set('generate', 'text'); if (query.text) params.set('prompt', query.text); }
+  else if (query && query.kind === 'generate') { params.set('generate', query.id); params.set('name', query.name); if (query.start) params.set('at', query.start); }
   if (lengthKey !== 'any') params.set('len', lengthKey);
   for (const [kind, values] of Object.entries(picks)) for (const value of values) params.append('f', `${kind}:${value}`);
   const text = params.toString();
@@ -547,6 +573,7 @@ function keepButton(hit) {
 }
 
 function keep(hit) {
+  if (hit.clip) { document.querySelector(`.hit[data-id="${hit.id}"] .keep-clip`)?.click(); return; }
   const on = !kept.has(hit.id);
   fetch(`/api/collections/${encodeURIComponent(keepIn)}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: hit.id, keep: on }),
@@ -570,12 +597,14 @@ function showKept() {
 // These rows have no matched passage and no score.
 const listed = (hit, extra = {}) => Object.assign(hit, { start: 0, window: hit.duration, figure: '' }, extra);
 
-function listView(title, strong) {
+// `back` is the search to return to on closing, when the view was opened from one.
+function listView(title, strong, back) {
   const note = el('p', { className: 'note wide' }, 'Loading');
   const column = el('section', { className: 'col', style: '--hue:var(--tape)' }, note);
   const columns = el('div', { className: 'columns' }, column);
   columns.dataset.count = 1;
-  const close = plain('Close', () => { query = null; keepAddress(); drawFilters(); start(); });
+  const close = back ? plain('Back to the results', () => ask(back))
+    : plain('Close', () => { query = null; keepAddress(); drawFilters(); start(); });
   $('main').replaceChildren(el('p', { className: 'seed' }, el('span', {}, title, el('strong', {}, strong)), close), columns);
   return { note, column };
 }
@@ -621,6 +650,168 @@ function showDuplicates() {
   }).catch(() => { if (mine === ticket) note.textContent = 'The search server is not responding. Start it again with "uv run audio-embed serve".'; });
 }
 
+// ---------- generating variations of one file
+
+const DISTANCES = [['close', 'Close'], ['medium', 'Medium'], ['far', 'Far']];
+const COUNTS = [[1, '1'], [2, '2'], [4, '4'], [8, '8']];
+const CLIP_LENGTHS = [['', 'As the sample'], [10, '10 s'], [30, '30 s'], [60, '1 min'], [120, '2 min']];
+const TEXT_LENGTHS = CLIP_LENGTHS.slice(1);   // with no sample, a length has to be picked
+const GEN_MODELS = { medium: 'Medium', sfx: 'Small, sound effects', music: 'Small, music' };
+const STRENGTHS = [[1, 'Normal'], [3, 'Strong'], [5, 'Very strong']];
+const SAMPLE_LONGEST = 60;   // a clip is as long as its sample up to this, unless a length is picked
+
+// The part of the sample the clips are made from: all of it, or a stretch from where it matched.
+function genPassage(duration, at) {
+  const seconds = Math.min(duration, gen.seconds || SAMPLE_LONGEST);
+  return seconds >= duration ? [0, duration] : [Math.min(at, duration - seconds), seconds];
+}
+
+// One choice of a few. A pick is shown in place, so the panel is never rebuilt while a prompt is being typed.
+function genChoice(name, options, key, then) {
+  const chips = options.map(([value, label]) => chip(label, gen[key] === value, null, () => {
+    gen[key] = value;
+    chips.forEach((button, i) => { button.ariaPressed = String(options[i][0] === value); });
+    if (then) then();
+  }));
+  return filterRow(name, ...chips);
+}
+
+function genText(key, label, placeholder) {
+  const input = el('input', { type: 'text', value: gen[key], placeholder, ariaLabel: label, maxLength: 300, spellcheck: false, autocomplete: 'off' });
+  input.oninput = () => { gen[key] = input.value; };
+  return filterRow(label, input);
+}
+
+// A clip that has not been kept is a row like any other, played from the clip cache.
+// `number` counts every clip in the view, across runs. A clip made from text is not a variation of anything.
+const clipHit = (clip, number) => ({
+  id: `clip-${clip.id}`, clip: clip.id, kept: clip.kept, name: `${clip.distance ? 'Variation' : 'Clip'} ${number}`, folder: '',
+  near: [DISTANCES.find(([value]) => value === clip.distance)?.[1].toLowerCase(), clip.prompt].filter(Boolean).join(' · '),
+  duration: clip.seconds, window: clip.seconds, start: 0, figure: '', audio: 'original',
+  src: `/generated/${clip.id}`, peaksUrl: `/api/generated/${clip.id}/peaks`,
+});
+
+function keepClipButton(hit) {
+  const button = el('button', { className: 'keep-clip', type: 'button' }, hit.kept ? 'Kept' : 'Keep');
+  button.disabled = !!hit.kept;
+  button.title = hit.kept ? `Kept as ${hit.kept}` : 'Save this clip to your library and make it searchable (K)';
+  button.onclick = () => {
+    button.disabled = true;
+    button.textContent = 'Keeping';
+    fetch(`/api/generated/${hit.clip}/keep`, { method: 'POST' }).then(async (r) => ({ ok: r.ok, body: await r.json() })).then(({ ok, body }) => {
+      if (!ok) { button.disabled = false; button.textContent = 'Keep'; button.title = body.error; document.querySelector('.gen-says')?.replaceChildren(body.error); return; }
+      hit.kept = body.kept;
+      button.textContent = 'Kept';
+      button.title = `Kept as ${body.kept}`;
+      document.querySelector('.gen-says')?.replaceChildren(body.not_indexed
+        ? `Kept as ${body.kept} in ${body.folder}, but it could not be indexed yet (${body.not_indexed}).`
+        : `Kept as ${body.kept} in ${body.folder}. It is now in the index.`);
+    }).catch(() => { button.disabled = false; button.textContent = 'Keep'; });
+  };
+  return button;
+}
+
+function showGenerate() {
+  const mine = ++ticket;
+  const fromText = query.id == null;   // made from the prompt alone, with no sample
+  const { note, column } = listView(fromText ? 'Generate from text' : 'Generate from ', fromText ? '' : query.name, query.back);
+  if (fromText && query.text) gen.prompt = query.text;
+  fetch(fromText ? '/api/generated?text=1' : `/api/generated?from=${query.id}`).then(async (r) => ({ ok: r.ok, body: await r.json() })).then(({ ok, body }) => {
+    if (mine !== ticket) return;
+    if (!ok) { note.textContent = body.error; return; }
+    if (body.problem) { note.textContent = body.problem; return; }
+    note.remove();
+    if (!body.models.includes(gen.model)) gen.model = body.models[0];
+
+    // The sample itself, with the passage the clips will be made from marked on it.
+    const sample = el('ol', { className: 'hits' });
+    const showSample = () => {
+      if (fromText) return;
+      const [from, seconds] = genPassage(body.source.duration, query.start || 0);
+      const item = row(listed({ ...body.source }, { start: from, window: seconds, at: 'uses from' }), 1, null);
+      sample.replaceChildren(item);
+      waveforms([item]);
+    };
+    showSample();
+
+    const clips = el('ol', { className: 'hits' });
+    const says = el('span', { className: 'gen-says', role: 'status' });
+    const go = el('button', { type: 'submit' });
+    const label = () => { go.textContent = `Generate ${gen.count}`; };
+    label();
+    const model = body.models.length > 1 ? [genChoice('Model', body.models.map((m) => [m, GEN_MODELS[m] || m]), 'model')] : [];
+    // From text, the length and the model decide the most, so they are not folded away.
+    const more = el('div', { className: 'gen-more', hidden: !gen.more },
+      genText('avoid', 'Avoid', 'What to steer away from, such as: drums, vocals'),
+      genChoice('Count', COUNTS, 'count', label),
+      ...(fromText ? [] : [genChoice('Length', CLIP_LENGTHS, 'seconds', showSample), ...model]),
+      genChoice('Strength', STRENGTHS, 'strength'));
+    more.querySelector('[data-row="Strength"]').title = 'How hard the prompt pulls. Anything to avoid needs more than Normal, so it is raised to Strong if left there.';
+    const fold = el('button', { className: 'plain', type: 'button', ariaExpanded: String(gen.more) }, gen.more ? 'Less' : 'More');
+    fold.onclick = () => { gen.more = !gen.more; more.hidden = !gen.more; fold.ariaExpanded = String(gen.more); fold.textContent = gen.more ? 'Less' : 'More'; };
+    const panel = el('form', { className: 'gen' },
+      ...(fromText
+        ? [genText('prompt', 'Prompt', 'The sound to make, such as: a dark, ominous low drone'), genChoice('Length', TEXT_LENGTHS, 'textSeconds'), ...model]
+        : [genText('prompt', 'Prompt', 'What to add or change, such as: slow metallic shimmer'), genChoice('How far', DISTANCES, 'distance')]),
+      more,
+      el('div', { className: 'gen-go' }, go, fold, says));
+    const far = panel.querySelector('[data-row="How far"]');
+    if (far) far.title = 'How far the clips may drift from the sample.';
+
+    const shown = new Set();
+    const add = (clip) => {
+      if (shown.has(clip.id)) return;
+      shown.add(clip.id);
+      const item = row(clipHit(clip, shown.size), shown.size, null);
+      clips.append(item);
+      waveforms([item]);
+    };
+    body.clips.forEach(add);
+
+    const follow = (run) => fetch(`/api/generate/${run}`).then(async (r) => ({ ok: r.ok, body: await r.json() })).then(({ ok, body: progress }) => {
+      if (mine !== ticket) return;
+      if (!ok) { says.textContent = progress.error; go.disabled = false; return; }
+      progress.clips.filter((clip) => clip.state === 'done').forEach((clip) => add({ ...clip, prompt: gen.sent.prompt, distance: gen.sent.distance }));
+      const made = progress.clips.filter((clip) => clip.state === 'done').length;
+      const failed = progress.clips.filter((clip) => clip.state === 'failed');
+      if (!progress.done) {
+        says.textContent = `Making ${Math.min(progress.clips.length, made + failed.length + 1)} of ${progress.clips.length}`;
+        setTimeout(() => follow(run), 500);
+        return;
+      }
+      go.disabled = false;
+      says.textContent = failed.length ? `${made} made, ${failed.length} failed: ${failed[0].error}` : `${made} made. Keep the ones you want; the rest are cleared out later.`;
+    }).catch(() => { if (mine === ticket) { says.textContent = 'The search server is not responding.'; go.disabled = false; } });
+
+    panel.onsubmit = (e) => {
+      e.preventDefault();
+      go.disabled = true;
+      says.textContent = 'Starting';
+      gen.sent = { prompt: gen.prompt.trim().replace(/\s+/g, ' '), distance: fromText ? null : gen.distance };
+      fetch('/api/generate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(fromText
+          ? { prompt: gen.prompt, avoid: gen.avoid, count: gen.count, seconds: gen.textSeconds, model: gen.model, strength: gen.strength }
+          : { id: query.id, start: query.start || 0, prompt: gen.prompt, avoid: gen.avoid, distance: gen.distance,
+            count: gen.count, seconds: gen.seconds || null, model: gen.model, strength: gen.strength }),
+      }).then(async (r) => ({ ok: r.ok, body: await r.json() })).then(({ ok, body: started }) => {
+        if (mine !== ticket) return;
+        if (!ok) { says.textContent = started.error; go.disabled = false; return; }
+        follow(started.run);
+      }).catch(() => { if (mine === ticket) { says.textContent = 'The search server is not responding.'; go.disabled = false; } });
+    };
+
+    if (fromText) column.append(panel, clips);
+    else if (body.source.audio === 'none') {
+      column.append(sample, el('p', { className: 'note wide' }, 'The original is online-only and its render is not within reach, so there is nothing to generate from. Connect the render drive, or download the file.'));
+      return;
+    }
+    else column.append(sample, panel, clips);
+    if (!body.keeps_in) says.textContent = 'No folder has been chosen for kept clips yet, so clips can be made but not kept. Run "audio-embed generator --keep-in FOLDER" once.';
+    panel.querySelector('input').focus();
+  }).catch(() => { if (mine === ticket) note.textContent = 'The search server is not responding. Start it again with "uv run audio-embed serve".'; });
+}
+
 // The sound categories need the model, so right after a restart they arrive a little late.
 function loadFilters(info) {
   if (info.filters) { offered = info.filters; drawFilters(); return; }
@@ -639,6 +830,8 @@ function restore() {
   else if (params.get('like')) ask({ kind: 'like', id: Number(params.get('like')), name: params.get('name') || 'this file' });
   else if (params.get('collection')) ask({ kind: 'collection', name: params.get('collection') });
   else if (params.get('duplicates')) ask({ kind: 'duplicates' });
+  else if (params.get('generate') === 'text') ask({ kind: 'generate', text: params.get('prompt') || '' });
+  else if (params.get('generate')) ask({ kind: 'generate', id: Number(params.get('generate')), name: params.get('name') || 'this file', start: Number(params.get('at')) || 0 });
   else start();
 }
 
@@ -646,6 +839,7 @@ function run() {
   if (stale) { stale = false; drawFilters(); }
   if (query.kind === 'collection') return showCollection();
   if (query.kind === 'duplicates') return showDuplicates();
+  if (query.kind === 'generate') return showGenerate();
   const mine = ++ticket;
   const main = $('main');
   const columns = el('div', { className: 'columns' });
@@ -691,7 +885,8 @@ function run() {
 function start() {
   const keys = el('p', { className: 'keys' });
   keys.innerHTML = '<kbd>/</kbd> search &nbsp; <kbd>↑</kbd> <kbd>↓</kbd> audition the next result &nbsp; <kbd>space</kbd> play or pause &nbsp; <kbd>S</kbd> find similar<br>'
-    + '<kbd>G</kbd> good match &nbsp; <kbd>B</kbd> bad match &nbsp; <kbd>K</kbd> keep in the collection &nbsp; <kbd>R</kbd> rank again by votes';
+    + '<kbd>G</kbd> good match &nbsp; <kbd>B</kbd> bad match &nbsp; <kbd>K</kbd> keep in the collection &nbsp; <kbd>R</kbd> rank again by votes'
+    + (canGenerate ? ' &nbsp; <kbd>N</kbd> generate from this<br><kbd>shift</kbd> <kbd>enter</kbd> in the search box: generate from that text' : '');
   $('main').replaceChildren(el('div', { className: 'start' }, el('p', {}, 'Describe a sound above, or pick one of your moods.'), keys));
 }
 
@@ -709,7 +904,7 @@ function loadOutlines() {
     const id = item._hit.id;
     if (!peaks.has(id)) {
       loading++;
-      peaks.set(id, fetch(`/api/peaks/${id}`).then((r) => (r.ok ? r.json() : [])).catch(() => [])
+      peaks.set(id, fetch(item._hit.peaksUrl || `/api/peaks/${id}`).then((r) => (r.ok ? r.json() : [])).catch(() => [])
         .finally(() => { loading--; loadOutlines(); }));
     }
     peaks.get(id).then((levels) => { item._peaks = levels; draw(item); });
@@ -719,7 +914,7 @@ function loadOutlines() {
 // Gets the waveforms for a list of rows. The stored ones for the first rows arrive in a
 // single request; anything else is fetched row by row as it scrolls into view.
 function waveforms(items) {
-  const ids = [...new Set(items.map((item) => item._hit.id))].filter((id) => !peaks.has(id)).slice(0, 60);
+  const ids = [...new Set(items.filter((item) => !item._hit.clip).map((item) => item._hit.id))].filter((id) => !peaks.has(id)).slice(0, 60);
   const stored = ids.length
     ? fetch(`/api/outlines?ids=${ids.join(',')}`).then((r) => (r.ok ? r.json() : {})).catch(() => ({}))
     : Promise.resolve({});
@@ -801,15 +996,16 @@ function row(hit, rank, model) {
     ...(hit.audio === 'render' ? [el('span', { className: 'tag', title: 'The original is online-only. This plays its render.' }, 'render')] : []),
     ...(hit.audio === 'none' ? [el('span', { className: 'tag', title: 'The original is online-only and its render is not within reach.' }, 'online only')] : []),
     el('span', { className: 'folder' }, hit.near || hit.folder));
-  const like = el('button', { className: 'plain like', type: 'button' }, 'Find similar');
+  // A clip that has not been kept is not in the index, so there is nothing to find similar to it yet.
+  const like = hit.clip ? el('span', { className: 'like' }) : el('button', { className: 'plain like', type: 'button' }, 'Find similar');
   const wave = el('canvas', { className: 'wave', ariaHidden: 'true' });
   const item = el('li', { className: 'hit' },
     el('div', { className: 'hit-head' },
       el('span', { className: 'rank' }, String(rank)), play, like,
-      el('span', { className: 'at' }, long ? `match at ${clock(hit.start)}` : ''),
+      el('span', { className: 'at' }, long ? `${hit.at || 'match at'} ${clock(hit.start)}` : ''),
       el('span', { className: 'len' }, length(hit.duration)),
       el('span', { className: 'score', title: hit.figure == null ? 'How close the match is. Only comparable within one model.' : '' }, hit.figure ?? hit.score.toFixed(3)),
-      voteButtons(hit)),
+      hit.clip ? el('span', { className: 'votes' }, keepClipButton(hit)) : voteButtons(hit)),
     wave);
   item._hit = hit;
   item.dataset.id = hit.id;
@@ -817,7 +1013,7 @@ function row(hit, rank, model) {
   item.style.setProperty('--nth', Math.min(rank, 8));
   item.classList.toggle('current', !!current && current.id === hit.id);
   play.onclick = () => load(hit, long ? hit.start : 0);
-  like.onclick = () => ask({ kind: 'like', id: hit.id, name: hit.name });
+  if (!hit.clip) like.onclick = () => ask({ kind: 'like', id: hit.id, name: hit.name });
   wave.onclick = (e) => {
     const box = wave.getBoundingClientRect();
     load(hit, ((e.clientX - box.left) / box.width) * hit.duration);
@@ -876,14 +1072,14 @@ function load(hit, at) {
   current = hit;
   $('deck').hidden = false;
   $('deck-name').textContent = hit.name;
-  $('deck-folder').textContent = hit.folder;
+  $('deck-folder').textContent = hit.clip ? `Generated${hit.near ? ', ' + hit.near : ''}` : hit.folder;
   if (same) {
     player.currentTime = at;
   } else {
     seekTo = wanted = at;
     converted = failed = false;
     $('clock').textContent = 'Preparing';
-    player.src = `/audio/${hit.id}`;
+    player.src = hit.src || `/audio/${hit.id}`;
   }
   player.play().catch(() => {});
   document.querySelectorAll('.hit').forEach((item) => item.classList.toggle('current', item._hit.id === hit.id));
@@ -905,7 +1101,7 @@ player.addEventListener('seeked', showTime);
 player.addEventListener('error', () => {
   if (!current) return;
   if (current.audio === 'none') { failed = true; $('clock').textContent = 'Online only'; return; }
-  if (converted) { failed = true; $('clock').textContent = 'This file could not be played'; return; }
+  if (converted || current.clip) { failed = true; $('clock').textContent = 'This file could not be played'; return; }
   // The browser rejected the original file, so ask for a converted copy.
   converted = true;
   seekTo = wanted;
@@ -916,8 +1112,13 @@ player.addEventListener('error', () => {
 const toggle = () => { if (current) player.paused ? player.play().catch(() => {}) : player.pause(); };
 $('toggle').innerHTML = ICON.play;
 $('toggle').onclick = toggle;
-$('deck-like').onclick = () => current && ask({ kind: 'like', id: current.id, name: current.name });
-$('deck-reveal').onclick = () => current && fetch(`/api/reveal/${current.id}`, { method: 'POST' });
+$('deck-like').onclick = () => current && !current.clip && ask({ kind: 'like', id: current.id, name: current.name });
+$('deck-reveal').onclick = () => current && !current.clip && fetch(`/api/reveal/${current.id}`, { method: 'POST' });
+// From a long file, the clips are made from the passage that matched the search.
+$('deck-generate').onclick = () => current && !current.clip && ask({
+  kind: 'generate', id: current.id, name: current.name, start: current.duration > current.window * 1.05 ? Math.round(current.start * 10) / 10 : 0,
+  back: searching() ? query : query?.back,
+});
 $('seek').onclick = (e) => {
   if (!current) return;
   const box = $('seek').getBoundingClientRect();
@@ -925,6 +1126,7 @@ $('seek').onclick = (e) => {
 };
 
 $('find-duplicates').onclick = () => ask({ kind: 'duplicates' });
+$('generate-text').onclick = () => ask({ kind: 'generate', text: $('q').value.trim(), back: searching() ? query : null });
 
 // ---------- keyboard
 
@@ -933,6 +1135,12 @@ $('ask').onsubmit = (e) => {
   const text = $('q').value.trim();
   if (text) ask({ kind: 'text', text });
 };
+// Shift+Enter makes the text instead of searching for it.
+$('q').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || !e.shiftKey || !canGenerate) return;
+  e.preventDefault();
+  $('generate-text').click();
+});
 // The whole field is the place to type, not only the letters in it.
 $('ask').onclick = (e) => { if (!e.target.closest('button, input')) $('q').focus(); };
 
@@ -952,6 +1160,7 @@ document.addEventListener('keydown', (e) => {
   // Space always plays or pauses, even with a result focused (Enter is what activates a button).
   else if (e.key === ' ') { e.preventDefault(); toggle(); }
   else if (e.key === 's' || e.key === 'S') { $('deck-like').click(); }
+  else if ((e.key === 'n' || e.key === 'N') && canGenerate) { $('deck-generate').click(); }
   else if ('gGbB'.includes(e.key)) {
     // Votes on the focused result, or else on the one that is playing.
     const item = document.activeElement.closest?.('.hit') || document.querySelector('.hit.current');
@@ -980,6 +1189,8 @@ document.addEventListener('keydown', (e) => {
 
 fetch('/api/library').then((r) => r.json()).then((info) => {
   models = info.models;
+  canGenerate = !!info.generator;
+  $('deck-generate').hidden = $('generate-text').hidden = !canGenerate;
   const saved = recall('view');
   view = models.some((m) => m.name === saved) || (saved === 'both' && models.length > 1) ? saved : models.length > 1 ? 'both' : models[0]?.name;
   drawViews();

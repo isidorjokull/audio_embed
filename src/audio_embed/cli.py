@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import audio, renders, search
+from . import audio, generate, renders, search
 from .outlines import Outlines, beside
 from .store import Store
 
@@ -199,6 +199,31 @@ def cmd_renders(args, store: Store) -> None:
     render_files(library, store.paths(), args.jobs)
 
 
+def cmd_generator(args, store: Store) -> None:
+    """Choose the Stable Audio 3 folder and the folder kept clips go to, and say what is ready."""
+    settings = args.db.parent / renders.SETTINGS
+    if args.keep_in:
+        root = args.keep_in.expanduser().resolve()
+        try:
+            generate.setup(root)
+        except RuntimeError as e:
+            sys.exit(str(e))
+        generate.save(settings, keep_root=root)
+        if generate.label_folder(args.db.parent / LOCATIONS, root):
+            print(f'Everything in {root} is now labelled "source: generated" in {LOCATIONS}.')
+    if args.sa3:
+        generate.save(settings, sa3=args.sa3.expanduser().resolve())
+    generator = generate.beside(args.db)
+    print(f"Stable Audio 3: {generator.sa3 or 'no folder chosen (--sa3 FOLDER)'}")
+    if generator.sa3 is not None:
+        for model in generate.MODELS:
+            why = generator.problem(model)
+            print(f"  {model}: {'ready' if why is None else 'not ready. ' + why}")
+    marked = generator.keep_root is not None and (generator.keep_root / generate.MARKER).is_file()
+    print(f"Kept clips go to: {generator.keep_root or 'no folder chosen (--keep-in FOLDER)'}"
+          + ("" if marked or generator.keep_root is None else "  (its marker is missing, so nothing will be written there)"))
+
+
 def cmd_search(args, store: Store) -> None:
     for name in args.model or store.models():
         matrix = store.load(name)
@@ -387,6 +412,13 @@ def main() -> None:
     p = sub.add_parser("duplicates", help="list every set of byte-identical files in a spreadsheet")
     p.set_defaults(fn=cmd_duplicates)
     p.add_argument("--out", type=Path, metavar="FILE", help="where to write it (default: duplicates.csv next to the index)")
+
+    p = sub.add_parser(
+        "generator", help="set up making variations of a file with Stable Audio 3 (asked once, then remembered)"
+    )
+    p.set_defaults(fn=cmd_generator)
+    p.add_argument("--sa3", type=Path, metavar="FOLDER", help="the optimized/mlx folder of a Stable Audio 3 checkout")
+    p.add_argument("--keep-in", type=Path, metavar="FOLDER", help="the folder in your library that kept clips are saved to")
 
     p = sub.add_parser("serve", help="open the search page in your browser")
     p.set_defaults(fn=cmd_serve)

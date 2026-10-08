@@ -28,8 +28,12 @@ audition by hand.
 - **Duplicate finder.** Byte-for-byte identical files, with the space they waste.
 - **Renders.** A small listening copy of every file on an external drive, so you can still
   audition files whose originals are online-only in a cloud-synced folder.
+- **Variations and new sounds.** Optional: with [Stable Audio 3](https://github.com/Stability-AI/stable-audio-3)
+  on the same Mac, make new versions of any file from the file and a prompt, or new clips from a
+  description alone, and keep the good ones.
 
-The audio library itself is only ever read. Nothing is moved, renamed, changed or deleted.
+The audio library itself is only ever read. Nothing is moved, renamed, changed or deleted. The one
+exception is opt-in: variations you choose to keep are added to a folder you name for them.
 
 ## Requirements
 
@@ -90,6 +94,8 @@ Your browser opens at `http://127.0.0.1:8765`. Describe a sound and press Return
 | `G` / `B` | Mark the current result a good or bad match |
 | `K` | Keep the current file in the chosen collection |
 | `R` | Rank again using your votes |
+| `N` | Generate variations of the current file (once [set up](#generating-variations)) |
+| `shift` `enter` | In the search box: generate from that text instead of searching |
 
 You can keep indexing more folders while the page is open; new files appear within seconds.
 
@@ -112,6 +118,7 @@ uv run audio-embed similar path/to/a/file.wav
 | `similar FILE [-k 10]` | Find files that sound like a file. |
 | `duplicates [--out FILE]` | Write every set of identical files to `data/duplicates.csv`. |
 | `renders [--to FOLDER]` | Make listening copies on a drive (see [Renders](#renders)). |
+| `generator [--sa3 FOLDER] [--keep-in FOLDER]` | Set up variations, or say what is ready (see [Generating variations](#generating-variations)). |
 
 Every command accepts `--db PATH` before its name to use a different index, for example
 `uv run audio-embed --db /tmp/try/index.db index SomeFolder`.
@@ -169,27 +176,58 @@ uv run audio-embed renders                                               # after
 
 As a guide, 34,000 files (100 hours of audio) gave a 190 MB index and 8 GB of renders.
 
+## Generating variations
+
+Sometimes the right sound is close to a file but not it. With Stable Audio 3 installed (Apple
+Silicon, its `optimized/mlx` version), the page can make variations of the file you are
+listening to.
+
+```bash
+uv run audio-embed generator --sa3 ~/stable-audio-3/optimized/mlx --keep-in ~/Samples/Generated   # once
+uv run audio-embed generator                                                                    # says what is ready
+```
+
+- **Generate from this** in the player (or `N`) opens the file with a small panel: a prompt for
+  what to add or change, and how far the result may drift (close, medium, far). **More** adds
+  what to avoid, how many clips, their length, the model and how hard the prompt pulls.
+- Clips appear under the panel as they are made, a few seconds each. From a long file they are
+  made from the passage your search matched, a minute of it unless you pick another length.
+- **Generate from text**, next to the file count, makes clips from a description alone: whatever
+  is in the search box becomes the prompt, and you pick a length and a model.
+- A new clip is temporary. **Keep** saves it as a WAV in the folder you named, with a comment
+  tag saying what it was made from, and adds it to the index. That folder is labelled
+  `source: generated`, so you can filter generated files in or out.
+- The tool writes into that folder only while it carries the marker file made by the command
+  above, and it never overwrites or deletes anything there. Remove a clip you no longer want
+  in Finder; the next `index` of the folder drops it from the index.
+
+Stable Audio 3 runs from your own checkout, as a separate program, on your machine. Its
+weights have their own licence, which you accept when you download them.
+
 ## Where things are kept
 
 Everything the tool writes goes into `data/` next to the code (not tracked by git), plus the
-render folder if you set one up.
+render folder if you set one up and the folder for kept variations if you name one.
 
 | File | What it is | If you delete it |
 |---|---|---|
 | `index.db` | The index | Re-index to rebuild |
 | `outlines.db` | Stored waveforms | Rebuilt as needed |
 | `previews/` | Converted copies of files a browser cannot play | Rebuilt as needed |
+| `generating/` | Variations you have not kept (up to 500 MB, oldest dropped first) | Unkept clips are gone |
 | `feedback.jsonl` | Your votes | Gone |
 | `collections/` | Your collections, as folders of shortcuts | Gone |
 | `moods.json`, `locations.json`, `categories.json` | Your presets and labelling | Gone |
-| `settings.json`, `renders.db` | Where renders live, and which render belongs to which file | A copy of `renders.db` is kept in the render folder |
+| `settings.json`, `renders.db` | Where renders, Stable Audio 3 and kept variations live, and which render belongs to which file | A copy of `renders.db` is kept in the render folder |
 
 ## Privacy
 
 - Indexing, search and playback all happen locally. The only network use is the one-time model
   download.
 - The page is served on `127.0.0.1` only, so it is not reachable from other machines.
-- Audio is served by index id, and only for files you have indexed.
+- Audio is served by index id, and only for files you have indexed. A variation that has not
+  been kept is served by its clip id, from the clip cache only.
+- Variations are made on your machine too.
 
 ## Development
 

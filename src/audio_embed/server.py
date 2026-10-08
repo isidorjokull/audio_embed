@@ -1,8 +1,12 @@
 """The local browser interface: a small server that keeps the models loaded.
 
 Bound to 127.0.0.1 only. Audio is served by file id, so only indexed files are
-reachable, and the library itself is never written to. A file whose original has
-gone online-only is played from its render when the render drive is connected.
+reachable; a generated clip is served by its clip id, from the clip cache only.
+A file whose original has gone online-only is played from its render when the
+render drive is connected. The library is never written to, with one exception:
+a generated clip the user keeps is added to the folder marked for that (see
+generate.py), and that folder is then indexed, the only time the server writes
+to the index.
 """
 
 import os
@@ -17,8 +21,8 @@ from starlette.applications import Starlette
 from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
-from . import audio, classify, duplicates, facets, models, renders, search
-from .cli import common_root, load_embedder
+from . import audio, classify, duplicates, facets, generate, labels, models, renders, search
+from .cli import LOCATIONS, common_root, index_folder, load_embedder, render_files
 from .feedback import Feedback
 from .outlines import Outlines, beside
 from .saved import Collections, Moods, clean_name
@@ -180,6 +184,32 @@ class Library:
                 return Path(matrix.paths[matrix.ids.index(file_id)])
         return None
 
+    def entry(self, file_id: int) -> tuple[str, Matrix, int] | None:
+        """(model, matrix, position) of an indexed file, from the first model that has it."""
+        for name, matrix in self.matrices().items():
+            if file_id in matrix.ids:
+                return name, matrix, matrix.ids.index(file_id)
+        return None
+
+    def take_in(self, folder: Path) -> None:
+        """Index and label what is new in one folder, as `audio-embed index` would, and show it at once.
+
+        Used after a generated clip has been kept: the one time the server writes to the index.
+        """
+        store = Store(self.db_path)
+        for name in self.matrices():
+            embedder = self.embedder(name)
+            with self._model_lock:
+                index_folder(store, embedder, folder)
+        paths = [p for p in store.paths() if Path(p).is_relative_to(folder)]
+        locations = labels.load_locations(self.db_path.parent / LOCATIONS)
+        earlier = store.labels()
+        store.set_labels({p: labels.read(Path(p), locations, earlier.get(p, set())) for p in paths})
+        if self.renders.root is not None:
+            render_files(self.renders, paths)
+        with self._lock:
+            self._loaded_at = 0.0  # the next request re-reads the index instead of waiting its turn
+
     def heard_from(self, path: Path) -> tuple[str, Path | None]:
         """Where a file can be listened to: ("original", path), ("render", its copy) or ("none", None)."""
         if audio.is_local(path):
@@ -292,6 +322,7 @@ def create_app(db_path: Path) -> Starlette:
     feedback = Feedback(db_path.parent / "feedback.jsonl")
     collections = Collections(db_path.parent / "collections")
     moods = Moods(db_path.parent / "moods.json")
+    generator = generate.beside(db_path)
 
     def matrix_for(request):
         return library.matrices().get(request.query_params.get("model", ""))
@@ -377,6 +408,8 @@ def create_app(db_path: Path) -> Starlette:
                 {"name": name, "label": models.EMBEDDERS[name].label, "files": len(m.paths)}
                 for name, m in matrices.items()
             ],
+            # Offered on the page once a Stable Audio 3 folder has been chosen.
+            "generator": generator.sa3 is not None,
         })
 
     def text_search(request):
@@ -570,6 +603,99 @@ def create_app(db_path: Path) -> Starlette:
         subprocess.run(["open", "-R", str(path)], check=False)
         return JSONResponse({"revealed": str(path)})
 
+    def clip_json(story: dict) -> dict:
+        return {
+            "id": story["clip"], "n": story["n"], "seconds": story["seconds"], "prompt": story["prompt"],
+            # A clip made from text alone has no sample to be near or far from.
+            "distance": None if story["key"] == generate.FROM_TEXT else story["distance"],
+            "kept": Path(story["kept"]).name if story.get("kept") else None,
+        }
+
+    def generated_from(request):
+        """What a generate view shows: the file (none with ?text), the clips made so far, and what is ready."""
+        source, key = None, generate.FROM_TEXT
+        if "text" not in request.query_params:
+            found = library.entry(int(request.query_params.get("from", -1)))
+            if found is None:
+                return error("That file is not in the index.", 404)
+            model, matrix, position = found
+            source, key = listed(matrix, model, [position])[0], matrix.paths[position]
+        ready = generator.models()
+        return JSONResponse({
+            "source": source,
+            "clips": [clip_json(story) for story in generator.clips_from(key)],
+            "models": ready,
+            "problem": None if ready else generator.problem("medium"),
+            "keeps_in": str(generator.keep_root) if generator.keep_root else None,
+            "longest": generate.LONGEST_ASKED_S,
+        })
+
+    async def generate_start(request):
+        """Start making clips: {"id", "start", "prompt", "avoid", "distance", "count", ...}.
+
+        With no "id" they are made from the prompt alone.
+        """
+        body = await request.json()
+        from_text = body.get("id") is None
+        try:
+            found = None if from_text else library.entry(int(body["id"]))
+            start = float(body.get("start") or 0)
+            ask = generate.ask_from(body)
+        except (TypeError, ValueError) as e:
+            return error(str(e), 400)
+        if found is None and not from_text:
+            return error("That file is not in the index.", 400)
+        why = generator.problem(ask.model)
+        if why:
+            return error(why, 409)
+        if from_text:
+            try:
+                return JSONResponse({"run": generator.start_from_text(ask)})
+            except ValueError as e:
+                return error(str(e), 400)
+        _, matrix, position = found
+        path = Path(matrix.paths[position])
+        _, source = library.heard_from(path)
+        if source is None:
+            return error("The original is online-only and its render is not within reach, so there is nothing to generate from.", 409)
+        run = generator.start(source, str(path), path.stem, matrix.durations[position], start, ask)
+        return JSONResponse({"run": run})
+
+    def generate_progress(request):
+        progress = generator.progress(request.path_params["run"])
+        if progress is None:
+            return error("That run is not known. The server may have been restarted.", 404)
+        return JSONResponse(progress)
+
+    def generated_listen(request):
+        clip = generator.clip(request.path_params["clip"])
+        if clip is None:
+            return error("That clip is no longer in the cache.", 404)
+        return FileResponse(clip, media_type="audio/wav")
+
+    def generated_peaks(request):
+        clip = generator.clip(request.path_params["clip"])
+        if clip is None:
+            return error("That clip is no longer in the cache.", 404)
+        return JSONResponse(audio.peaks(clip))
+
+    def generated_keep(request):
+        """Copy a clip into the kept folder, then index that folder so the clip can be searched."""
+        try:
+            kept = generator.keep(request.path_params["clip"])
+        except RuntimeError as e:
+            return error(str(e), 409)
+        hit, why = None, None
+        try:
+            library.take_in(generator.keep_root)
+            for model, matrix in library.matrices().items():
+                if str(kept) in matrix.paths:
+                    hit = listed(matrix, model, [matrix.paths.index(str(kept))])[0]
+                    break
+        except Exception as e:  # the clip is safely kept either way; say that indexing is still owed
+            why = str(e)[:200]
+        return JSONResponse({"kept": kept.name, "folder": str(kept.parent), "hit": hit, "not_indexed": why})
+
     def warm_up():
         for name in library.matrices():
             library.embedder(name)
@@ -596,4 +722,10 @@ def create_app(db_path: Path) -> Starlette:
         Route("/api/moods", mood_list),
         Route("/api/moods", mood_save, methods=["POST"]),
         Route("/api/moods/{name}", mood_remove, methods=["DELETE"]),
+        Route("/api/generate", generate_start, methods=["POST"]),
+        Route("/api/generate/{run}", generate_progress),
+        Route("/api/generated", generated_from),
+        Route("/api/generated/{clip}/peaks", generated_peaks),
+        Route("/api/generated/{clip}/keep", generated_keep, methods=["POST"]),
+        Route("/generated/{clip}", generated_listen),
     ])
