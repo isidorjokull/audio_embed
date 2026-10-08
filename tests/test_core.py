@@ -419,6 +419,77 @@ def test_steer_moves_a_query_toward_liked_files_and_away_from_rejected_ones():
     np.testing.assert_allclose(search.steer(query, empty, empty, weight=2.0), query, atol=1e-6)
 
 
+def test_closeness_is_nothing_at_the_floor_and_full_for_the_same_search():
+    query = unit(1, 0, 0)
+    others = np.stack([unit(1, 0, 0), unit(4, 3, 0), unit(3, 4, 0), unit(0, 1, 0)])  # 1, 0.8, 0.6, 0 alike
+    np.testing.assert_allclose(search.closeness(query, others, floor=0.6), [1.0, 0.5, 0.0, 0.0], atol=1e-6)
+
+
+def test_steer_is_pulled_less_by_a_vote_that_counts_less():
+    query, liked = unit(1, 0, 0), np.stack([unit(0, 1, 0), unit(0, 0, 1)])
+    empty = np.zeros((0, 3), dtype=np.float32)
+    steered = search.steer(query, liked, empty, weight=1.0, liked_counts=np.array([1.0, 0.25]))
+    np.testing.assert_allclose(steered[1] / steered[2], 4.0, atol=1e-5)
+
+
+def test_steer_pulls_only_as_hard_as_its_closest_vote_counts():
+    query, liked = unit(1, 0, 0), np.stack([unit(0, 1, 0)])
+    empty = np.zeros((0, 3), dtype=np.float32)
+    own = search.steer(query, liked, empty, weight=1.0)
+    borrowed = search.steer(query, liked, empty, weight=1.0, liked_counts=np.array([0.5]))
+    np.testing.assert_allclose(own[1] / own[0], 1.0, atol=1e-6)
+    np.testing.assert_allclose(borrowed[1] / borrowed[0], 0.5, atol=1e-6)
+
+
+def test_feedback_lists_the_votes_of_every_text_search(tmp_path):
+    from audio_embed.feedback import Feedback
+
+    votes = Feedback(tmp_path / "feedback.jsonl")
+    votes.record({"kind": "text", "text": "drone"}, "/lib/a.wav", 1)
+    votes.record({"kind": "text", "text": "drone"}, "/lib/b.wav", -1)
+    votes.record({"kind": "text", "text": "rain"}, "/lib/c.wav", 1)
+    votes.record({"kind": "text", "text": "wind"}, "/lib/d.wav", 1)
+    votes.record({"kind": "text", "text": "wind"}, "/lib/d.wav", 0)  # cleared: no standing vote left
+    votes.record({"kind": "like", "path": "/lib/a.wav"}, "/lib/e.wav", 1)
+    assert votes.by_text() == {"drone": {"/lib/a.wav": 1, "/lib/b.wav": -1}, "rain": {"/lib/c.wav": 1}}
+
+
+def borrowing_votes(tmp_path):
+    from audio_embed.feedback import Feedback
+
+    votes = Feedback(tmp_path / "feedback.jsonl")
+    votes.record({"kind": "text", "text": "drone"}, "/lib/a.wav", 1)
+    votes.record({"kind": "text", "text": "drone"}, "/lib/b.wav", -1)
+    votes.record({"kind": "text", "text": "rain"}, "/lib/c.wav", 1)
+    votes.record({"kind": "text", "text": "dark drone"}, "/lib/d.wav", 1)
+    votes.record({"kind": "like", "path": "/lib/a.wav"}, "/lib/e.wav", 1)
+    # "dark drone" is 0.8 like "drone" and 0.6 like "rain".
+    return votes, {"drone": unit(1, 0, 0), "rain": unit(0, 1, 0), "dark drone": unit(4, 3, 0)}
+
+
+def test_a_search_borrows_the_votes_of_a_similar_search_and_counts_them_for_less(tmp_path):
+    from audio_embed.server import counted_votes
+
+    votes, vectors = borrowing_votes(tmp_path)
+    asked = {"kind": "text", "text": "dark drone"}
+    counted = counted_votes(votes, asked, vectors["dark drone"], vectors.__getitem__, floor=0.6)
+    assert sorted((path, verdict, round(count, 6)) for path, verdict, count in counted) == [
+        ("/lib/a.wav", 1, 0.5),
+        ("/lib/b.wav", -1, 0.5),
+        ("/lib/d.wav", 1, 1.0),  # its own vote; nothing from "rain", which is no closer than the floor
+    ]
+
+
+def test_nothing_is_borrowed_without_a_floor_or_for_a_find_similar_search(tmp_path):
+    from audio_embed.server import counted_votes
+
+    votes, vectors = borrowing_votes(tmp_path)
+    asked = {"kind": "text", "text": "dark drone"}
+    assert counted_votes(votes, asked, vectors["dark drone"], vectors.__getitem__, floor=None) == [("/lib/d.wav", 1, 1.0)]
+    like = {"kind": "like", "path": "/lib/a.wav"}
+    assert counted_votes(votes, like, unit(1, 0, 0), vectors.__getitem__, floor=0.6) == [("/lib/e.wav", 1, 1.0)]
+
+
 def test_feedback_lists_the_standing_votes_of_one_search(tmp_path):
     from audio_embed.feedback import Feedback
 

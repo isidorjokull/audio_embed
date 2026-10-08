@@ -61,3 +61,12 @@ class Feedback:
         """Every standing vote for one search: file path -> 1 or -1."""
         key = query_key(query)
         return {path: verdict for (asked, path), verdict in self._votes.items() if asked == key}
+
+    def by_text(self) -> dict[str, dict[str, int]]:
+        """Every text search with a standing vote: its text -> {file path: 1 or -1}."""
+        found: dict[str, dict[str, int]] = {}
+        with self._lock:
+            for (asked, path), verdict in self._votes.items():
+                if asked.startswith("text:"):
+                    found.setdefault(asked.removeprefix("text:"), {})[path] = verdict
+        return found

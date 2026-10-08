@@ -60,18 +60,39 @@ def file_vector(matrix: Matrix, path: str) -> np.ndarray | None:
     return unit_mean(matrix.vecs[matrix.file_idx == matrix.paths.index(path)])
 
 
-def steer(query: np.ndarray, liked: np.ndarray, rejected: np.ndarray, weight: float) -> np.ndarray:
+def closeness(query: np.ndarray, others: np.ndarray, floor: float) -> np.ndarray:
+    """How much the votes on other searches count toward this one, from 0 to 1.
+
+    `others` are the query vectors of those searches. One that is no more like
+    this search than `floor` counts for nothing; one worded the same counts fully.
+    """
+    return np.clip((others @ query - floor) / (1 - floor), 0.0, 1.0)
+
+
+def steer(
+    query: np.ndarray,
+    liked: np.ndarray,
+    rejected: np.ndarray,
+    weight: float,
+    liked_counts: np.ndarray | None = None,
+    rejected_counts: np.ndarray | None = None,
+) -> np.ndarray:
     """Pull a query toward the files the user liked and away from the ones they rejected.
 
     `liked` and `rejected` are the vectors of those files (either may be empty).
     `weight` is how hard the votes pull compared with the original query.
+    The counts say how much each vote counts, 1 when not given: a vote borrowed
+    from a similar search counts for less than one on this search, and the pull
+    as a whole is only as hard as the vote that counts most. Counts must be above 0.
     """
     shift = np.zeros_like(query)
-    if len(liked):
-        shift += liked.mean(axis=0)
-    if len(rejected):
-        shift -= rejected.mean(axis=0)
-    steered = query + weight * shift
+    strongest = 0.0
+    for sign, vecs, counts in ((1, liked, liked_counts), (-1, rejected, rejected_counts)):
+        if len(vecs):
+            counts = np.ones(len(vecs)) if counts is None else counts
+            shift += sign * np.average(vecs, axis=0, weights=counts)
+            strongest = max(strongest, float(counts.max()))
+    steered = query + weight * strongest * shift
     return steered / np.linalg.norm(steered)
 
 

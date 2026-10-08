@@ -34,6 +34,13 @@ RELOAD_EVERY_S = 15
 # 89 real votes, 2 ranked a held-out liked file above a held-out rejected one in 97% of
 # pairs, against 82% with no steering; 1 and 4 were slightly worse.
 STEER_WEIGHT = 2.0
+# How alike two text searches must be before votes on one start to count toward the other
+# (they count for more the closer the searches are). Each model has its own scale: two
+# unrelated searches are about 0.26 alike to CLAP and 0.65 to EmbeddingGemma. On the first
+# 204 real votes, borrowed votes alone ranked a liked file above a rejected one in 69% of
+# pairs for CLAP and 64% for EmbeddingGemma, against 42% and 46% with no votes; added to a
+# search's own votes they changed nothing. A model that is not listed borrows nothing.
+BORROW_FLOOR = {"clap": 0.6, "gemma": 0.8}
 # The duplicate finder shows the sets that would free the most space.
 DUPLICATE_SETS_SHOWN = 200
 # How many stored waveform outlines one request may ask for.
@@ -255,6 +262,27 @@ def hits_json(
     return out
 
 
+def counted_votes(feedback: Feedback, asked: dict, vector, vector_of, floor: float | None) -> list[tuple[str, int, float]]:
+    """Every vote that bears on a search, as (file path, 1 or -1, how much it counts).
+
+    The search's own votes count fully. For a text search, the votes on other text
+    searches count by how alike the two searches are (see `search.closeness`), so a
+    new wording starts from what was learnt on similar ones. `vector_of` gives the
+    query vector of a search text. With no `floor`, nothing is borrowed.
+    """
+    counted = [(path, verdict, 1.0) for path, verdict in feedback.votes(asked).items()]
+    if asked["kind"] != "text" or floor is None:
+        return counted
+    others = {text: votes for text, votes in feedback.by_text().items() if text != asked["text"]}
+    if not others:
+        return counted
+    counts = search.closeness(vector, np.stack([vector_of(text) for text in others]), floor)
+    for votes, count in zip(others.values(), counts):
+        if count > 0:
+            counted += [(path, verdict, float(count)) for path, verdict in votes.items()]
+    return counted
+
+
 def error(message: str, status: int) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 
@@ -294,23 +322,31 @@ def create_app(db_path: Path) -> Starlette:
             keep &= facets.mask(index, len(matrix.paths), picks)
         return sounds, keep
 
-    def steered(request, matrix, vector, asked, keep):
-        """With `steer` in the request, bend the search by the user's votes on it.
+    def steered(request, matrix, model, vector, asked, keep):
+        """With `steer` in the request, bend the search by the user's votes.
 
         The query moves toward the files they liked and away from the ones they
-        rejected, and the rejected files themselves are left out.
+        rejected, on this search and (counting for less) on similar ones. The
+        files rejected for this very search are left out.
         """
         if "steer" not in request.query_params:
             return vector, keep
         means, where = library.vectors(matrix)
-        votes = {where[path]: verdict for path, verdict in feedback.votes(asked).items() if path in where}
+        votes = counted_votes(
+            feedback, asked, vector, lambda text: library.text_vector(model, text), BORROW_FLOOR.get(model)
+        )
+        votes = [(where[path], verdict, count) for path, verdict, count in votes if path in where]
         if not votes:
             return vector, keep
-        liked = np.array([i for i, verdict in votes.items() if verdict == 1], dtype=int)
-        rejected = np.array([i for i, verdict in votes.items() if verdict == -1], dtype=int)
+        liked = np.array([i for i, verdict, _ in votes if verdict == 1], dtype=int)
+        rejected = np.array([i for i, verdict, _ in votes if verdict == -1], dtype=int)
+        liked_counts = np.array([count for _, verdict, count in votes if verdict == 1])
+        rejected_counts = np.array([count for _, verdict, count in votes if verdict == -1])
         keep = keep.copy()
-        keep[rejected] = False
-        return search.steer(vector, means[liked], means[rejected], STEER_WEIGHT), keep
+        own = feedback.votes(asked)
+        keep[np.array([where[p] for p, verdict in own.items() if verdict == -1 and p in where], dtype=int)] = False
+        steered = search.steer(vector, means[liked], means[rejected], STEER_WEIGHT, liked_counts, rejected_counts)
+        return steered, keep
 
     def listed(matrix, model, positions):
         """Result rows for files picked by position rather than by a search."""
@@ -352,7 +388,7 @@ def create_app(db_path: Path) -> Starlette:
         vector = library.text_vector(model, query)
         asked = {"kind": "text", "text": query}
         sounds, keep = narrowed(request, matrix)
-        vector, keep = steered(request, matrix, vector, asked, keep)
+        vector, keep = steered(request, matrix, model, vector, asked, keep)
         hits = search.rank(matrix, vector, limit(request), keep=keep)
         return JSONResponse(
             hits_json(matrix, model, hits, lambda p: feedback.verdict(asked, p), sounds, library.root(matrix), heard)
@@ -369,7 +405,7 @@ def create_app(db_path: Path) -> Starlette:
         model = request.query_params["model"]
         asked = {"kind": "like", "path": str(path)}
         sounds, keep = narrowed(request, matrix)
-        vector, keep = steered(request, matrix, vector, asked, keep)
+        vector, keep = steered(request, matrix, model, vector, asked, keep)
         hits = search.rank(matrix, vector, limit(request), exclude=str(path), keep=keep)
         return JSONResponse(
             hits_json(matrix, model, hits, lambda p: feedback.verdict(asked, p), sounds, library.root(matrix), heard)

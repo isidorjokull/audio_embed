@@ -20,7 +20,8 @@ audition by hand.
   file names, folders and embedded tags. A sound category ("drone", "impact", "texture"...) is
   assigned to every file automatically.
 - **Votes that steer.** Thumbs up or down on results; a search can then be re-ranked toward what
-  you liked and away from what you rejected.
+  you liked and away from what you rejected. Votes on similarly worded searches count too, so a
+  new wording starts from what you already taught it.
 - **Collections.** Keep files in named collections. Each one is a plain folder of shortcuts you
   can open in Finder or add to your DAW's browser.
 - **Mood presets.** Save a description under a short name and run it with one click.

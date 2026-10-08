@@ -503,7 +503,7 @@ function voteRow() {
     if (stale) drawFilters();
     if (searching()) run();
   });
-  steering.title = 'Moves the results of a search toward the files you gave a thumbs up for it, and leaves out the ones you gave a thumbs down.';
+  steering.title = 'Moves the results of a search toward the files you gave a thumbs up for it, and leaves out the ones you gave a thumbs down. Your votes on similarly worded searches count too, for less.';
   const advancing = option('Go to the next result after voting', advance, () => { advance = !advance; advancing.ariaChecked = String(advance); });
   const row = filterRow('Votes', steering, advancing);
   if (steer && stale && searching()) row.append(plain('Rank again with my new votes', () => run()));
