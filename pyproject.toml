@@ -1,0 +1,30 @@
+[project]
+name = "audio-embed"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "isidorjokull", email = "isidorjokull@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.5.3",
+    "pillow>=12.3.0",
+    "sentence-transformers>=6.1",
+    "starlette>=1.7.0",
+    "torch>=2.14",
+    "torchvision>=0.29.1",
+    "transformers>=5.19",
+    "uvicorn>=0.54.0",
+]
+
+[project.scripts]
+audio-embed = "audio_embed:main"
+
+[build-system]
+requires = ["uv_build>=0.10.10,<0.11.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

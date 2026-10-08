@@ -1,0 +1,997 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audio search</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --desk: #181B20;
+    --panel: #21262C;
+    --rule: #333A43;
+    --tape: #EDE8DA;
+    --dim: #A7B0BA;
+    --amber: #FFAC30;
+    --teal: #4DD4C6;
+    /* The colour of what you have set: the search, picked filters, switches that are on, votes. Amber and teal stay the models'. */
+    --accent: #763DD9;
+    --accent-lit: #8149E2;
+    --accent-ink: #AE80FF;   /* the same violet where it is a line or a glyph on the dark, not a fill */
+    --on-accent: #FFFFFF;
+    /* Three heights: wells are cut into a panel, panels sit on the desk, raised things sit on a panel. */
+    --well: #0E1013;
+    --raised: #2D343C;
+    --edge: #4B5560;
+    --tint: rgba(237, 232, 218, .05);
+    --lit: inset 0 1px 0 rgba(237, 232, 218, .08);
+    --sunk: inset 0 1px 3px rgba(0, 0, 0, .5);
+    --cast: 0 18px 36px -22px rgba(0, 0, 0, .8);
+    --gutter: clamp(16px, 4vw, 56px);
+    --ease: cubic-bezier(.22, 1, .36, 1);
+    --text: "Avenir Next", "Avenir", system-ui, sans-serif;
+    --figures: "DIN Alternate", "Avenir Next", system-ui, sans-serif;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--desk); scroll-padding: 16px 0 112px; }
+  body {
+    margin: 0;
+    padding: 0 0 132px;
+    color: var(--tape);
+    font: 15px/1.45 var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+  button, input { font: inherit; color: inherit; }
+  button { cursor: pointer; transition: color .15s, background-color .15s, border-color .15s, box-shadow .15s, opacity .15s; }
+  :focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+  .hidden-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+
+  /* The question */
+  .ask {
+    padding: clamp(18px, 4vh, 36px) var(--gutter) 18px;
+    background: var(--panel); border-bottom: 1px solid var(--rule); box-shadow: var(--cast);
+  }
+  .ask > * { max-width: 1500px; margin-left: auto; margin-right: auto; }
+  .ask form {
+    display: flex; gap: 12px; align-items: center;
+    padding: 5px 5px 5px 16px;
+    background: var(--well); border: 1px solid var(--rule); border-radius: 9px; box-shadow: var(--sunk);
+    cursor: text; transition: border-color .15s, box-shadow .15s;
+  }
+  .ask form:focus-within { border-color: var(--accent-ink); box-shadow: var(--sunk), 0 0 0 3px color-mix(in srgb, var(--accent-ink) 28%, transparent); }
+  .glass { flex: none; width: 22px; height: 22px; fill: none; stroke: var(--dim); stroke-width: 2; stroke-linecap: round; transition: stroke .15s; }
+  .ask form:focus-within .glass { stroke: var(--tape); }
+  #q {
+    flex: 1; min-width: 0;
+    padding: 7px 0;
+    background: none; border: 0; border-radius: 0;
+    font-size: clamp(20px, 2.4vw, 28px); font-weight: 500; letter-spacing: -0.01em; line-height: 1.3;
+  }
+  #q::placeholder { color: var(--dim); }
+  #q:focus { outline: none; }
+  #q::-webkit-search-cancel-button { display: none; }
+  .ask form:focus-within .hint { display: none; }
+  .ask form button {
+    align-self: stretch; padding: 0 20px;
+    background: var(--accent); color: var(--on-accent); border: 0; border-radius: 5px; font-weight: 600;
+    box-shadow: inset 0 -2px 0 rgba(0, 0, 0, .14), 0 1px 2px rgba(0, 0, 0, .5);
+  }
+  .ask form button:hover { background: var(--accent-lit); }
+  .ask form button:active { box-shadow: inset 0 1px 2px rgba(0, 0, 0, .3); }
+  .ask-row { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; justify-content: space-between; margin-top: 14px; }
+  .views { display: inline-flex; gap: 2px; padding: 3px; background: var(--well); border: 1px solid var(--rule); border-radius: 8px; box-shadow: var(--sunk); }
+  .views button {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 4px 13px; background: none; border: 0; border-radius: 5px; color: var(--dim);
+    white-space: nowrap;
+  }
+  .views button:hover { color: var(--tape); }
+  .views button[aria-checked="true"] { background: var(--raised); color: var(--tape); box-shadow: var(--lit), 0 1px 2px rgba(0, 0, 0, .5); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--hue); flex: none; }
+  .dot + .dot { margin-left: -4px; }
+  .library { margin: 0; color: var(--dim); font-size: 13px; }
+  .library .plain { margin-left: 14px; }
+
+  /* Filters */
+  .filters { display: grid; gap: 9px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--rule); }
+  .filter { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+  .filter.apart { margin-top: 7px; padding-top: 15px; border-top: 1px solid var(--rule); }
+  .filter-name { flex: none; width: 4.6em; color: var(--dim); font-size: 13px; }
+  .chip { padding: 3px 11px; background: var(--tint); border: 1px solid var(--edge); border-radius: 13px; color: var(--dim); font-size: 13px; white-space: nowrap; }
+  .chip:hover { color: var(--tape); border-color: var(--dim); background: var(--raised); }
+  .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, .5); }
+  .chip small { margin-left: 6px; font: 11px var(--figures); }
+  .filters .plain { font-size: 13px; margin-left: 6px; }
+  .naming { display: inline-flex; gap: 6px; align-items: baseline; }
+  .naming input { width: 15em; padding: 3px 9px; background: var(--well); border: 1px solid var(--dim); border-radius: 3px; box-shadow: var(--sunk); font-size: 13px; }
+  .naming button[type="submit"] { padding: 3px 11px; background: var(--accent); color: var(--on-accent); border: 0; border-radius: 3px; font-size: 13px; font-weight: 600; }
+  .set-head { margin: 26px 0 0; color: var(--dim); font-size: 13px; }
+  .col > .set-head:first-of-type { margin-top: 18px; }
+  .group { display: inline-flex; align-items: baseline; gap: 8px; padding: 3px 10px; background: var(--tint); border: 1px solid var(--edge); border-radius: 3px; color: var(--dim); font-size: 13px; max-width: 30ch; white-space: nowrap; }
+  .group span { overflow: hidden; text-overflow: ellipsis; }
+  .group::after { content: ""; flex: none; align-self: center; width: 5px; height: 5px; margin-top: -3px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); transition: transform .2s var(--ease); }
+  .group:hover { color: var(--tape); border-color: var(--dim); background: var(--raised); }
+  .group[aria-expanded="true"] { background: var(--well); color: var(--tape); border-color: var(--dim); box-shadow: var(--sunk); }
+  .group[aria-expanded="true"]::after { margin-top: 3px; transform: rotate(-135deg); }
+  .group.picked { color: var(--accent-ink); border-color: var(--accent-ink); font-weight: 600; }
+  /* The values of the open group, in a tray cut into the panel under the row of groups. */
+  .values { margin-left: calc(4.6 * 13px + 6px); padding: 10px 12px; background: var(--well); border: 1px solid var(--rule); border-radius: 8px; box-shadow: var(--sunk); }
+  .values.fresh { animation: drop .22s var(--ease); }
+  @keyframes drop { from { opacity: 0; transform: translateY(-5px); } }
+  .switch { padding: 2px 10px 2px 2px; margin-right: 6px; background: none; border: 0; border-radius: 11px; color: var(--dim); font-size: 13px; white-space: nowrap; }
+  .switch i { display: inline-block; position: relative; width: 26px; height: 16px; margin-right: 8px; vertical-align: -3px; border-radius: 8px; background: var(--well); box-shadow: var(--sunk), inset 0 0 0 1px var(--edge); transition: background-color .18s, box-shadow .18s; }
+  .switch i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 10px; height: 10px; border-radius: 50%; background: var(--dim); transition: transform .18s var(--ease), background-color .18s; }
+  .switch:hover { color: var(--tape); }
+  .switch[aria-checked="true"] { color: var(--tape); }
+  .switch[aria-checked="true"] i { background: var(--accent); box-shadow: none; }
+  .switch[aria-checked="true"] i::after { background: var(--on-accent); transform: translateX(10px); }
+
+  /* Results */
+  main { max-width: calc(1500px + 2 * var(--gutter)); margin: 0 auto; padding: 0 var(--gutter); }
+  .seed { display: flex; gap: 14px; align-items: baseline; margin: 18px 0 0; font-size: 18px; }
+  .seed strong { font-weight: 600; }
+  .plain { padding: 0; background: none; border: 0; color: var(--dim); text-decoration: underline; text-underline-offset: 3px; }
+  .plain:hover { color: var(--tape); }
+  .columns { display: grid; gap: 0 clamp(24px, 4vw, 56px); grid-template-columns: repeat(var(--count, 1), minmax(0, 1fr)); }
+  .columns[data-count="1"] { max-width: 940px; }
+  .col h2 { display: flex; align-items: center; gap: 9px; margin: 26px 0 4px; font-size: 15px; font-weight: 600; }
+  .note { margin: 14px 0; color: var(--dim); max-width: 46ch; }
+  .note.wide { max-width: 78ch; overflow-wrap: anywhere; }
+  .hits { list-style: none; margin: 0; padding: 0; }
+  .hit { padding: 12px; margin: 0 -12px; border-radius: 8px; transition: background-color .15s; animation: arrive .24s var(--ease) backwards; animation-delay: calc(var(--nth, 0) * 14ms); }
+  @keyframes arrive { from { opacity: 0; transform: translateY(4px); } }
+  .hit:hover { background: rgba(237, 232, 218, .03); }
+  .hit.current { background: color-mix(in srgb, var(--hue) 6%, var(--panel)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--hue) 50%, var(--rule)), var(--lit), var(--cast); }
+  .hit.current .rank { color: var(--hue); }
+  .hit.current .sound { background: var(--raised); }
+  .hit-head { display: grid; grid-template-columns: 1.7em minmax(0, 1fr) auto auto 3.4em 3.2em auto; gap: 10px; align-items: baseline; }
+  .votes { display: inline-flex; gap: 2px; align-self: center; }
+  .votes button { display: grid; place-items: center; width: 26px; height: 24px; padding: 0; background: none; border: 0; border-radius: 3px; color: var(--dim); opacity: .7; }
+  .votes button:hover, .hit:focus-within .votes button { opacity: 1; }
+  .votes button[aria-pressed="true"] { color: var(--accent-ink); opacity: 1; }
+  .votes svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .votes button[aria-pressed="true"] svg { fill: currentColor; fill-opacity: .9; }
+  .rank, .at, .len, .score { font-family: var(--figures); font-size: 13px; color: var(--dim); }
+  .len, .score { text-align: right; }
+  .at { color: var(--hue); }
+  .play { min-width: 0; padding: 0; background: none; border: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .name { font-weight: 500; }
+  .hit.current .name { font-weight: 700; }
+  .folder { margin-left: 10px; color: var(--dim); font-size: 13px; }
+  .hit.offline .name { color: var(--dim); }
+  .tag { margin-left: 10px; padding: 1px 6px; border: 1px solid var(--rule); border-radius: 3px; color: var(--dim); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+  .sound { margin-left: 10px; padding: 1px 8px; border-radius: 10px; background: var(--panel); font-size: 12px; }
+  .like { visibility: hidden; font-size: 13px; }
+  .hit:hover .like, .hit:focus-within .like, .hit.current .like { visibility: visible; }
+  .wave { display: block; width: 100%; height: 44px; margin-top: 6px; cursor: pointer; border-radius: 2px; }
+
+  .start { margin-top: 36px; }
+  .start p { margin: 0 0 12px; color: var(--dim); }
+  .start ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+  .start .plain { font-size: 18px; color: var(--tape); text-decoration-color: var(--rule); }
+  .start .keys { margin: 44px 0 0; font-size: 13px; line-height: 2.2; }
+  kbd { font: 12px var(--figures); padding: 1px 6px; background: var(--panel); border: 1px solid var(--edge); border-bottom-width: 2px; border-radius: 4px; color: var(--tape); }
+
+  /* Transport */
+  #deck {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    background: var(--panel); border-top: 1px solid var(--rule); box-shadow: 0 -18px 36px -22px rgba(0, 0, 0, .8);
+    padding: 0 var(--gutter) 14px;
+  }
+  #deck[hidden] { display: none; }
+  #seek { height: 14px; margin: 0 calc(-1 * var(--gutter)) 10px; cursor: pointer; position: relative; }
+  #seek::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--well); }
+  #fill { position: absolute; top: 0; left: 0; height: 3px; width: 0; background: var(--accent-ink); }
+  .deck-row { display: flex; align-items: center; gap: 16px; max-width: 1500px; margin: 0 auto; }
+  #toggle { width: 42px; height: 42px; flex: none; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); border: 0; border-radius: 50%; box-shadow: inset 0 -2px 0 rgba(0, 0, 0, .14), 0 1px 3px rgba(0, 0, 0, .5); }
+  #toggle:hover { background: var(--accent-lit); }
+  #toggle:active { box-shadow: inset 0 1px 2px rgba(0, 0, 0, .3); }
+  #toggle svg { width: 16px; height: 16px; fill: currentColor; }
+  .deck-name { flex: 1; min-width: 0; }
+  .deck-name strong, .deck-name span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .deck-name strong { font-weight: 600; }
+  .deck-name span { color: var(--dim); font-size: 13px; }
+  #clock { font-family: var(--figures); color: var(--dim); white-space: nowrap; }
+  .deck-row .action { padding: 7px 14px; background: var(--tint); border: 1px solid var(--edge); border-radius: 3px; white-space: nowrap; }
+  .deck-row .action:hover { border-color: var(--dim); background: var(--raised); }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+  @media (max-width: 860px) {
+    .columns { grid-template-columns: minmax(0, 1fr); }
+    .values { margin-left: 0; }
+    .hint { display: none; }
+    .views button { padding: 6px 9px; font-size: 13px; gap: 6px; }
+    .hit-head { grid-template-columns: 1.7em minmax(0, 1fr) auto 3.2em auto; }
+    .hit-head .like, .hit-head .len { display: none; }
+    .deck-row { flex-wrap: wrap; }
+    .deck-name { flex-basis: 50%; }
+  }
+</style>
+</head>
+<body>
+
+<header class="ask">
+  <form id="ask">
+    <svg class="glass" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="7"/><path d="M20.5 20.5l-5-5"/></svg>
+    <label class="hidden-label" for="q">Describe a sound or a mood</label>
+    <input id="q" type="search" placeholder="Describe a sound or a mood" autocomplete="off" spellcheck="false" autofocus>
+    <kbd class="hint" aria-hidden="true">/</kbd>
+    <button type="submit">Search</button>
+  </form>
+  <div class="ask-row">
+    <div class="views" id="views" role="radiogroup" aria-label="Search with"></div>
+    <p class="library"><span id="library"></span><button class="plain" id="find-duplicates" type="button">Find duplicates</button></p>
+  </div>
+  <div class="filters" id="filters"></div>
+</header>
+
+<main id="main"></main>
+
+<footer id="deck" hidden>
+  <div id="seek" title="Jump to a point in the file"><div id="fill"></div></div>
+  <div class="deck-row">
+    <button id="toggle" aria-label="Pause"></button>
+    <div class="deck-name"><strong id="deck-name"></strong><span id="deck-folder"></span></div>
+    <span id="clock"></span>
+    <button class="action" id="deck-like">Find similar</button>
+    <button class="action" id="deck-reveal">Show in Finder</button>
+  </div>
+</footer>
+
+<audio id="player" preload="auto"></audio>
+
+<script>
+const HUES = { clap: 'var(--amber)', gemma: 'var(--teal)' };
+const ICON = {
+  play: '<svg viewBox="0 0 16 16"><path d="M3 1.5v13l11-6.5z"/></svg>',
+  pause: '<svg viewBox="0 0 16 16"><path d="M3 1.5h3.5v13H3zM9.5 1.5H13v13H9.5z"/></svg>',
+};
+const $ = (id) => document.getElementById(id);
+const player = $('player');
+
+let models = [];        // [{name, label, files}]
+let view = 'both';      // a model name, or 'both'
+let query = null;       // {kind: 'text', text}, {kind: 'like', id, name}, {kind: 'collection', name} or {kind: 'duplicates'}
+let offered = [];       // filter groups from the server: [{kind, values: [{value, count}]}]
+let lengthKey = 'any';  // which of LENGTHS is picked
+let picks = {};         // kind -> Set of picked values
+let openKind = null;    // the filter group whose values are showing
+let steer = false;      // rank searches by my votes on them; always starts off
+let advance = false;    // go to the next result after a vote; always starts off
+let stale = false;      // votes have changed since the results were ranked
+let moods = [];         // [{name, description}]
+let collections = [];   // [{name, count}]
+let keepIn = 'Picks';   // the collection the keep button adds to
+let kept = new Set();   // ids of the files in that collection
+let naming = null;      // 'mood' or 'collection' while a name is being typed
+let typed = '';         // that name so far, kept so a redraw of the rows does not lose it
+let ticket = 0;         // ignores answers to searches that have been replaced
+let current = null;     // the hit that is loaded in the player
+let seekTo = null;      // where to start once the file has loaded
+let wanted = 0;         // the last requested start, kept for a retry
+let converted = false;  // whether the player is on a converted copy of the current file
+let failed = false;     // the current file could not be played even after converting
+const peaks = new Map();
+
+function el(tag, props = {}, ...children) {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children);
+  return node;
+}
+const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+const length = (s) => (s < 10 ? `${s.toFixed(1)} s` : clock(s));
+const megabytes = (bytes) => (bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : bytes >= 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1e3))} KB`);
+const searching = () => !!query && (query.kind === 'text' || query.kind === 'like');
+const remember = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
+const recall = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
+
+// ---------- searching
+
+function activeModels() {
+  return view === 'both' ? models : models.filter((m) => m.name === view);
+}
+
+// One choice of several, so it works like radio buttons: Tab reaches the picked one, and
+// the left and right arrows move the pick.
+function drawViews() {
+  const options = models.map((m) => ({ value: m.name, label: m.label, hues: [HUES[m.name]] }));
+  if (models.length > 1) options.push({ value: 'both', label: 'Side by side', hues: models.map((m) => HUES[m.name]) });
+  const focused = $('views').contains(document.activeElement);
+  const choose = (value) => { view = value; remember('view', view); drawViews(); if (query) run(); };
+  $('views').replaceChildren(...options.map((o, i) => {
+    const button = el('button', { type: 'button', role: 'radio', ariaChecked: String(o.value === view), tabIndex: o.value === view ? 0 : -1 },
+      ...o.hues.map((h) => el('i', { className: 'dot', style: `--hue:${h}` })), o.label);
+    button.onclick = () => choose(o.value);
+    button.onkeydown = (e) => {
+      const by = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+      if (!by) return;
+      e.preventDefault();
+      choose(options[(i + by + options.length) % options.length].value);
+    };
+    return button;
+  }));
+  // The buttons were rebuilt, so put the focus back on the picked one.
+  if (focused) $('views').querySelector('[aria-checked="true"]')?.focus();
+}
+
+function ask(next) {
+  query = next;
+  $('q').value = next.kind === 'text' ? next.text : '';
+  naming = null;
+  keepAddress();
+  drawFilters();
+  run();
+}
+
+// Keep the search and the filters in the address so a reload brings them back.
+function keepAddress() {
+  const params = new URLSearchParams();
+  if (query && query.kind === 'text') params.set('q', query.text);
+  if (query && query.kind === 'like') { params.set('like', query.id); params.set('name', query.name); }
+  if (query && query.kind === 'collection') params.set('collection', query.name);
+  if (query && query.kind === 'duplicates') params.set('duplicates', '1');
+  if (lengthKey !== 'any') params.set('len', lengthKey);
+  for (const [kind, values] of Object.entries(picks)) for (const value of values) params.append('f', `${kind}:${value}`);
+  const text = params.toString();
+  history.replaceState(null, '', text ? '#' + text : location.pathname);
+}
+
+// ---------- filters
+
+const LENGTHS = [
+  { key: 'any', label: 'Any' },
+  { key: 'under2', label: 'Under 2 s', max: 2 },
+  { key: '2to10', label: '2 to 10 s', min: 2, max: 10 },
+  { key: '10to60', label: '10 to 60 s', min: 10, max: 60 },
+  { key: '1to5m', label: '1 to 5 min', min: 60, max: 300 },
+  { key: 'over5m', label: 'Over 5 min', min: 300 },
+];
+const KIND_NAMES = { sound: 'Sound', bpm: 'BPM' };
+const kindName = (kind) => KIND_NAMES[kind] || kind[0].toUpperCase() + kind.slice(1);
+const filtering = () => lengthKey !== 'any' || Object.values(picks).some((values) => values.size);
+
+function filterParams() {
+  const length = LENGTHS.find((l) => l.key === lengthKey) || LENGTHS[0];
+  let text = '';
+  if (length.min != null) text += `&min=${length.min}`;
+  if (length.max != null) text += `&max=${length.max}`;
+  for (const [kind, values] of Object.entries(picks)) for (const value of values) text += `&f=${encodeURIComponent(`${kind}:${value}`)}`;
+  return text;
+}
+
+function changed() {
+  drawFilters();
+  keepAddress();
+  if (searching()) run();
+}
+
+function plain(label, onclick) {
+  const button = el('button', { className: 'plain', type: 'button' }, label);
+  button.onclick = onclick;
+  return button;
+}
+
+function chip(label, pressed, count, onclick) {
+  const button = el('button', { className: 'chip', type: 'button', ariaPressed: String(pressed) }, label);
+  if (count != null) button.append(el('small', {}, count.toLocaleString()));
+  button.onclick = onclick;
+  return button;
+}
+
+// An on/off setting, as opposed to a chip, which narrows what is shown.
+function option(label, on, onclick) {
+  const button = el('button', { className: 'switch', type: 'button', role: 'switch', ariaChecked: String(on) }, el('i'), label);
+  button.onclick = onclick;
+  return button;
+}
+
+function filterRow(name, ...controls) {
+  const row = el('div', { className: 'filter' }, el('span', { className: 'filter-name' }, name), ...controls);
+  row.dataset.row = name;
+  return row;
+}
+
+let shownKind = null;   // the group whose values were showing at the last draw
+
+// Length is always shown. Every other group is a button that opens its values, one group
+// at a time, so a dozen kinds of label do not bury the results.
+function drawFilters() {
+  // The rows are rebuilt whenever anything changes, so note which button has the focus.
+  const at = document.activeElement;
+  const from = at?.tagName === 'BUTTON' ? at.closest('#filters .filter') : null;
+  const held = from && { row: from.dataset.row, nth: [...from.querySelectorAll('button')].indexOf(at) };
+
+  const rows = [moodRow(), filterRow('Length',
+    ...LENGTHS.map((l) => chip(l.label, l.key === lengthKey, null, () => { lengthKey = l.key; changed(); })))];
+  if (offered.length) {
+    const groups = filterRow('Filter by');
+    for (const group of offered) {
+      const picked = [...(picks[group.kind] || [])];
+      const button = el('button', { className: 'group', type: 'button', ariaExpanded: String(openKind === group.kind) },
+        el('span', {}, picked.length ? `${kindName(group.kind)}: ${picked.join(', ')}` : kindName(group.kind)));
+      button.classList.toggle('picked', picked.length > 0);
+      button.onclick = () => { openKind = openKind === group.kind ? null : group.kind; drawFilters(); };
+      groups.append(button);
+    }
+    if (filtering()) {
+      const clear = el('button', { className: 'plain', type: 'button' }, 'Clear filters');
+      clear.onclick = () => { lengthKey = 'any'; picks = {}; changed(); };
+      groups.append(clear);
+    }
+    rows.push(groups);
+    const open = offered.find((group) => group.kind === openKind);
+    if (open) {
+      const picked = picks[open.kind] || new Set();
+      const tray = el('div', { className: 'filter values', role: 'group', ariaLabel: kindName(open.kind) },
+        ...open.values.map(({ value, count }) => chip(value, picked.has(value), count, () => {
+          const mine = picks[open.kind] || (picks[open.kind] = new Set());
+          mine.has(value) ? mine.delete(value) : mine.add(value);
+          if (!mine.size) delete picks[open.kind];
+          changed();
+        })));
+      tray.dataset.row = 'values';
+      // Only a tray that has just opened drops in; picking a value in it must not replay that.
+      tray.classList.toggle('fresh', shownKind !== open.kind);
+      rows.push(tray);
+    }
+    shownKind = open ? open.kind : null;
+  }
+  const votes = voteRow();
+  votes.classList.add('apart');
+  rows.push(votes, keepRow());
+  $('filters').replaceChildren(...rows);
+  // Put the cursor back in a name being typed, or else the focus back where it was.
+  const input = $('filters').querySelector('.naming input');
+  if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+  else if (held) {
+    const buttons = $('filters').querySelectorAll(`.filter[data-row="${held.row}"] button`);
+    (buttons[held.nth] || buttons[buttons.length - 1])?.focus();
+  }
+}
+
+function startNaming(what) {
+  naming = what;
+  typed = '';
+  drawFilters();
+}
+
+// ---------- moods, vote switches and collections: the rows around the filters
+
+// A small inline form for typing a name, used for new moods and new collections.
+function nameForm(placeholder, save) {
+  const input = el('input', { type: 'text', placeholder, maxLength: 60, ariaLabel: placeholder, required: true, value: typed,
+    pattern: '[^.\\/:\\\\][^\\/:\\\\]*', title: 'Up to 60 characters, not starting with a dot, without / : or \\' });
+  input.oninput = () => { typed = input.value; };
+  const form = el('form', { className: 'naming' }, input, el('button', { type: 'submit' }, 'Save'),
+    plain('Cancel', () => { naming = null; drawFilters(); }));
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    naming = null;
+    save(input.value.trim().replace(/\s+/g, ' '));
+  };
+  return form;
+}
+
+// A mood is a word of yours tied to a description that finds it. Picking one runs that description.
+function moodRow() {
+  const active = query && query.kind === 'text' ? moods.find((m) => m.description === query.text) : null;
+  const row = filterRow('Moods',
+    ...moods.map((m) => {
+      const button = chip(m.name, m === active, null, () => ask({ kind: 'text', text: m.description }));
+      button.title = m.description;
+      return button;
+    }));
+  if (naming === 'mood') row.append(nameForm('Name this mood', (name) => changeMoods('POST', '/api/moods', { name, description: query.text })));
+  else if (active) row.append(plain('Remove this mood', () => changeMoods('DELETE', `/api/moods/${encodeURIComponent(active.name)}`)));
+  else if (query && query.kind === 'text') row.append(plain('Save this search as a mood', () => startNaming('mood')));
+  return row;
+}
+
+function changeMoods(method, url, body) {
+  fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })
+    .then((r) => (r.ok ? r.json() : moods)).then((list) => { moods = list; drawFilters(); }).catch(() => drawFilters());
+}
+
+function voteRow() {
+  // A switch is flipped in place rather than redrawn, so that its knob is seen to slide.
+  const steering = option('Rank results by my votes', steer, () => {
+    steer = !steer;
+    steering.ariaChecked = String(steer);
+    if (stale) drawFilters();
+    if (searching()) run();
+  });
+  steering.title = 'Moves the results of a search toward the files you gave a thumbs up for it, and leaves out the ones you gave a thumbs down.';
+  const advancing = option('Go to the next result after voting', advance, () => { advance = !advance; advancing.ariaChecked = String(advance); });
+  const row = filterRow('Votes', steering, advancing);
+  if (steer && stale && searching()) row.append(plain('Rank again with my new votes', () => run()));
+  return row;
+}
+
+// A collection is a folder of shortcuts to the files you keep. One collection at a time is
+// the place the bookmark button (and K) keeps files in.
+function keepRow() {
+  const names = collections.some((c) => c.name === keepIn) ? collections : [...collections, { name: keepIn, count: 0 }];
+  const row = filterRow('Keep in',
+    ...names.map((c) => chip(c.name, c.name === keepIn, c.count, () => chooseCollection(c.name))));
+  if (naming === 'collection') row.append(nameForm('Name the new collection', chooseCollection));
+  else row.append(plain('New collection', () => startNaming('collection')));
+  row.append(plain('View this collection', () => ask({ kind: 'collection', name: keepIn })));
+  if (names.find((c) => c.name === keepIn).count) {
+    row.append(plain('Show its folder', () => fetch(`/api/collections/${encodeURIComponent(keepIn)}/reveal`, { method: 'POST' })));
+  }
+  return row;
+}
+
+function loadCollections() {
+  return fetch('/api/collections').then((r) => r.json()).then((list) => { collections = list; drawFilters(); }).catch(() => {});
+}
+
+function chooseCollection(name) {
+  keepIn = name;
+  remember('keepIn', name);
+  drawFilters();
+  fetch(`/api/collections/${encodeURIComponent(name)}`).then((r) => (r.ok ? r.json() : { hits: [] }))
+    .then((body) => { kept = new Set(body.hits.map((hit) => hit.id)); showKept(); }).catch(() => {});
+}
+
+const BOOKMARK = '<svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>';
+
+function keepButton(hit) {
+  const button = el('button', { className: 'keep', type: 'button', innerHTML: BOOKMARK, ariaPressed: String(kept.has(hit.id)) });
+  button.title = button.ariaLabel = `Keep in ${keepIn}`;
+  button.onclick = () => keep(hit);
+  return button;
+}
+
+function keep(hit) {
+  const on = !kept.has(hit.id);
+  fetch(`/api/collections/${encodeURIComponent(keepIn)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: hit.id, keep: on }),
+  }).then((r) => {
+    if (!r.ok) return;
+    on ? kept.add(hit.id) : kept.delete(hit.id);
+    showKept();
+    loadCollections();
+  }).catch(() => {});
+}
+
+function showKept() {
+  document.querySelectorAll('.hit .keep').forEach((button) => {
+    button.ariaPressed = String(kept.has(button.closest('.hit')._hit.id));
+    button.title = button.ariaLabel = `Keep in ${keepIn}`;
+  });
+}
+
+// ---------- views that are not a search: one collection, and identical files
+
+// These rows have no matched passage and no score.
+const listed = (hit, extra = {}) => Object.assign(hit, { start: 0, window: hit.duration, figure: '' }, extra);
+
+function listView(title, strong) {
+  const note = el('p', { className: 'note wide' }, 'Loading');
+  const column = el('section', { className: 'col', style: '--hue:var(--tape)' }, note);
+  const columns = el('div', { className: 'columns' }, column);
+  columns.dataset.count = 1;
+  const close = plain('Close', () => { query = null; keepAddress(); drawFilters(); start(); });
+  $('main').replaceChildren(el('p', { className: 'seed' }, el('span', {}, title, el('strong', {}, strong)), close), columns);
+  return { note, column };
+}
+
+function showCollection() {
+  const mine = ++ticket;
+  const { note, column } = listView('Collection ', query.name);
+  fetch(`/api/collections/${encodeURIComponent(query.name)}`).then((r) => r.json()).then((body) => {
+    if (mine !== ticket) return;
+    const hits = body.hits || [];
+    if (!hits.length) { note.textContent = 'Nothing kept here yet. Use the bookmark on any result, or press K.'; return; }
+    note.textContent = `${hits.length} files. Its folder of shortcuts is ${body.folder}`
+      + (body.missing ? ` (${body.missing} more shortcuts point at files that are not in the index).` : '');
+    const list = el('ol', { className: 'hits' });
+    const items = hits.map((hit, i) => row(listed(hit), i + 1, null));
+    list.append(...items);
+    column.append(list);
+    waveforms(items);
+  }).catch(() => { if (mine === ticket) note.textContent = 'The search server is not responding. Start it again with "uv run audio-embed serve".'; });
+}
+
+function showDuplicates() {
+  const mine = ++ticket;
+  const { note, column } = listView('Identical files', '');
+  note.textContent = 'Comparing file contents. The first time can take a minute on a large library.';
+  fetch('/api/duplicates').then((r) => r.json()).then((body) => {
+    if (mine !== ticket) return;
+    if (!body.set_count) { note.textContent = 'No identical files found.'; return; }
+    note.textContent = `${body.set_count.toLocaleString()} sets of byte-for-byte identical files. Removing the ${body.spare_files.toLocaleString()} extra copies would free ${megabytes(body.spare_bytes)}.`
+      + ' Nothing is deleted from here: use Show in Finder and decide for yourself.'
+      + (body.set_count > body.sets.length ? ` Showing the ${body.sets.length} sets that waste the most space.` : '');
+    const every = [];
+    for (const set of body.sets) {
+      column.append(el('p', { className: 'set-head' }, `${set.hits.length} identical files, ${megabytes(set.bytes_each)} each`));
+      const list = el('ol', { className: 'hits' });
+      // The full folder is shown here, since telling the copies apart is the point.
+      const items = set.hits.map((hit, i) => row(listed(hit, { near: hit.folder }), i + 1, null));
+      list.append(...items);
+      column.append(list);
+      every.push(...items);
+    }
+    waveforms(every);
+  }).catch(() => { if (mine === ticket) note.textContent = 'The search server is not responding. Start it again with "uv run audio-embed serve".'; });
+}
+
+// The sound categories need the model, so right after a restart they arrive a little late.
+function loadFilters(info) {
+  if (info.filters) { offered = info.filters; drawFilters(); return; }
+  setTimeout(() => fetch('/api/library').then((r) => r.json()).then(loadFilters).catch(() => {}), 3000);
+}
+
+function restore() {
+  const params = new URLSearchParams(location.hash.slice(1));
+  if (LENGTHS.some((l) => l.key === params.get('len'))) lengthKey = params.get('len');
+  for (const item of params.getAll('f')) {
+    const at = item.indexOf(':');
+    if (at > 0) (picks[item.slice(0, at)] || (picks[item.slice(0, at)] = new Set())).add(item.slice(at + 1));
+  }
+  drawFilters();
+  if (params.get('q')) ask({ kind: 'text', text: params.get('q') });
+  else if (params.get('like')) ask({ kind: 'like', id: Number(params.get('like')), name: params.get('name') || 'this file' });
+  else if (params.get('collection')) ask({ kind: 'collection', name: params.get('collection') });
+  else if (params.get('duplicates')) ask({ kind: 'duplicates' });
+  else start();
+}
+
+function run() {
+  if (stale) { stale = false; drawFilters(); }
+  if (query.kind === 'collection') return showCollection();
+  if (query.kind === 'duplicates') return showDuplicates();
+  const mine = ++ticket;
+  const main = $('main');
+  const columns = el('div', { className: 'columns' });
+  columns.dataset.count = activeModels().length;
+  columns.style.setProperty('--count', activeModels().length);
+  main.replaceChildren();
+  if (query.kind === 'like') {
+    const clear = el('button', { className: 'plain', type: 'button' }, 'Clear');
+    clear.onclick = () => { query = null; keepAddress(); drawFilters(); start(); $('q').focus(); };
+    main.append(el('p', { className: 'seed' }, el('span', {}, 'Files that sound like ', el('strong', {}, query.name)), clear));
+  }
+  main.append(columns);
+
+  for (const model of activeModels()) {
+    const note = el('p', { className: 'note' }, 'Searching');
+    const list = el('ol', { className: 'hits' });
+    const column = el('section', { className: 'col', style: `--hue:${HUES[model.name]}` },
+      el('h2', {}, el('i', { className: 'dot' }), model.label), note, list);
+    columns.append(column);
+    const slow = setTimeout(() => { note.textContent = 'Loading the model. The first search after starting takes a few seconds longer.'; }, 1500);
+    const url = query.kind === 'text'
+      ? `/api/search?model=${model.name}&k=20&q=${encodeURIComponent(query.text)}`
+      : `/api/similar?model=${model.name}&k=20&id=${query.id}`;
+    fetch(url + filterParams() + (steer ? '&steer=1' : ''))
+      .then(async (r) => ({ ok: r.ok, body: await r.json() }))
+      .then(({ ok, body }) => {
+        if (mine !== ticket) return;
+        if (!ok) { note.textContent = body.error; return; }
+        if (!body.length) {
+          note.textContent = filtering() ? 'No files pass these filters. Loosen or clear them.' : 'No matches. This file may not be indexed with this model.';
+          return;
+        }
+        note.remove();
+        const items = body.map((hit, i) => row(hit, i + 1, model.name));
+        list.append(...items);
+        waveforms(items);
+      })
+      .catch(() => { if (mine === ticket) note.textContent = 'The search server is not responding. Start it again with "uv run audio-embed serve".'; })
+      .finally(() => clearTimeout(slow));
+  }
+}
+
+function start() {
+  const keys = el('p', { className: 'keys' });
+  keys.innerHTML = '<kbd>/</kbd> search &nbsp; <kbd>↑</kbd> <kbd>↓</kbd> audition the next result &nbsp; <kbd>space</kbd> play or pause &nbsp; <kbd>S</kbd> find similar<br>'
+    + '<kbd>G</kbd> good match &nbsp; <kbd>B</kbd> bad match &nbsp; <kbd>K</kbd> keep in the collection &nbsp; <kbd>R</kbd> rank again by votes';
+  $('main').replaceChildren(el('div', { className: 'start' }, el('p', {}, 'Describe a sound above, or pick one of your moods.'), keys));
+}
+
+// ---------- one result
+
+// Waveform outlines load a few at a time. A browser opens only six connections to one
+// server, so loading them all at once would make the next search or playback wait.
+const waiting = [];   // result rows whose outline has not been asked for yet
+let loading = 0;
+
+function loadOutlines() {
+  while (loading < 3 && waiting.length) {
+    const item = waiting.shift();
+    if (!item.isConnected) continue;  // its results have been replaced
+    const id = item._hit.id;
+    if (!peaks.has(id)) {
+      loading++;
+      peaks.set(id, fetch(`/api/peaks/${id}`).then((r) => (r.ok ? r.json() : [])).catch(() => [])
+        .finally(() => { loading--; loadOutlines(); }));
+    }
+    peaks.get(id).then((levels) => { item._peaks = levels; draw(item); });
+  }
+}
+
+// Gets the waveforms for a list of rows. The stored ones for the first rows arrive in a
+// single request; anything else is fetched row by row as it scrolls into view.
+function waveforms(items) {
+  const ids = [...new Set(items.map((item) => item._hit.id))].filter((id) => !peaks.has(id)).slice(0, 60);
+  const stored = ids.length
+    ? fetch(`/api/outlines?ids=${ids.join(',')}`).then((r) => (r.ok ? r.json() : {})).catch(() => ({}))
+    : Promise.resolve({});
+  stored.then((found) => {
+    for (const [id, levels] of Object.entries(found)) peaks.set(Number(id), Promise.resolve(levels));
+    items.forEach((item) => watcher.observe(item));
+  });
+}
+
+const watcher = new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    if (!entry.isIntersecting) continue;
+    watcher.unobserve(entry.target);
+    waiting.push(entry.target);
+  }
+  loadOutlines();
+}, { rootMargin: '300px' });
+
+// ---------- thumbs up and down, saved for training
+
+const THUMB = {
+  1: '<svg viewBox="0 0 24 24"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>',
+  '-1': '<svg viewBox="0 0 24 24"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/></svg>',
+};
+
+// Thumbs only make sense on the results of a search; the bookmark is on every row.
+function voteButtons(hit) {
+  const thumbs = !searching() ? [] : [1, -1].map((verdict) => {
+    const label = verdict === 1 ? 'Good match' : 'Bad match';
+    const button = el('button', { type: 'button', title: label, ariaLabel: label, ariaPressed: String(hit.vote === verdict), innerHTML: THUMB[verdict] });
+    button.dataset.verdict = verdict;
+    button.onclick = () => vote(hit, verdict, button.closest('.hit'));
+    return button;
+  });
+  return el('span', { className: 'votes' }, ...thumbs, keepButton(hit));
+}
+
+// Plays the result before or after a row, in the same list.
+function step(from, by) {
+  const items = [...from.closest('.hits').querySelectorAll('.hit')];
+  const next = items[items.indexOf(from) + by];
+  if (!next) return;
+  const button = next.querySelector('.play');
+  button.focus();
+  button.scrollIntoView({ block: 'nearest' });
+  button.click();
+}
+
+// A vote is about this file for this search, so it shows on the file in every column.
+// Voting the same way twice clears it.
+function vote(hit, verdict, item) {
+  if (!searching()) return;
+  const next = hit.vote === verdict ? 0 : verdict;
+  const asked = query.kind === 'text' ? { kind: 'text', text: query.text } : { kind: 'like', id: query.id };
+  fetch('/api/feedback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: asked, id: hit.id, verdict: next, model: hit.model, rank: hit.rank, score: hit.score, start_s: hit.start, window_s: hit.window }),
+  }).then((r) => {
+    if (!r.ok) return;
+    document.querySelectorAll(`.hit[data-id="${hit.id}"]`).forEach((item) => {
+      item._hit.vote = next;
+      item.querySelectorAll('.votes button[data-verdict]').forEach((b) => { b.ariaPressed = String(Number(b.dataset.verdict) === next); });
+    });
+    if (steer && !stale) { stale = true; drawFilters(); }
+    if (advance && next && item && item.isConnected) step(item, 1);
+  }).catch(() => {});
+}
+
+function row(hit, rank, model) {
+  hit.rank = rank;
+  hit.model = model;
+  const long = hit.duration > hit.window * 1.05;
+  const play = el('button', { className: 'play', type: 'button', title: `${hit.folder ? hit.folder + '/' : ''}${hit.name}` },
+    el('span', { className: 'name' }, hit.name),
+    ...(hit.sound ? [el('span', { className: 'sound' }, hit.sound)] : []),
+    ...(hit.tags || []).map((tag) => el('span', { className: 'tag' }, tag)),
+    // Played from its render on the external drive, or not playable: the original is online-only.
+    ...(hit.audio === 'render' ? [el('span', { className: 'tag', title: 'The original is online-only. This plays its render.' }, 'render')] : []),
+    ...(hit.audio === 'none' ? [el('span', { className: 'tag', title: 'The original is online-only and its render is not within reach.' }, 'online only')] : []),
+    el('span', { className: 'folder' }, hit.near || hit.folder));
+  const like = el('button', { className: 'plain like', type: 'button' }, 'Find similar');
+  const wave = el('canvas', { className: 'wave', ariaHidden: 'true' });
+  const item = el('li', { className: 'hit' },
+    el('div', { className: 'hit-head' },
+      el('span', { className: 'rank' }, String(rank)), play, like,
+      el('span', { className: 'at' }, long ? `match at ${clock(hit.start)}` : ''),
+      el('span', { className: 'len' }, length(hit.duration)),
+      el('span', { className: 'score', title: hit.figure == null ? 'How close the match is. Only comparable within one model.' : '' }, hit.figure ?? hit.score.toFixed(3)),
+      voteButtons(hit)),
+    wave);
+  item._hit = hit;
+  item.dataset.id = hit.id;
+  item.classList.toggle('offline', hit.audio === 'none');
+  item.style.setProperty('--nth', Math.min(rank, 8));
+  item.classList.toggle('current', !!current && current.id === hit.id);
+  play.onclick = () => load(hit, long ? hit.start : 0);
+  like.onclick = () => ask({ kind: 'like', id: hit.id, name: hit.name });
+  wave.onclick = (e) => {
+    const box = wave.getBoundingClientRect();
+    load(hit, ((e.clientX - box.left) / box.width) * hit.duration);
+  };
+  requestAnimationFrame(() => draw(item));
+  return item;
+}
+
+function draw(item) {
+  const canvas = item.querySelector('canvas');
+  const hit = item._hit;
+  const w = canvas.clientWidth, h = canvas.clientHeight, ratio = window.devicePixelRatio || 1;
+  if (!w) return;
+  if (canvas.width !== Math.round(w * ratio)) { canvas.width = Math.round(w * ratio); canvas.height = Math.round(h * ratio); }
+  const g = canvas.getContext('2d');
+  g.setTransform(ratio, 0, 0, ratio, 0, 0);
+  g.clearRect(0, 0, w, h);
+  const style = getComputedStyle(item);
+  const hue = style.getPropertyValue('--hue').trim();
+  const tape = style.getPropertyValue('--tape').trim();
+  const long = hit.duration > hit.window * 1.05;
+  const from = long ? (hit.start / hit.duration) * w : -1;
+  const to = long ? ((hit.start + hit.window) / hit.duration) * w : -1;
+  if (long) { g.globalAlpha = 0.13; g.fillStyle = hue; g.fillRect(from, 0, Math.max(to - from, 3), h); }
+
+  const levels = item._peaks;
+  const bars = Math.floor(w / 3);
+  for (let i = 0; i < bars; i++) {
+    let level = 0;
+    if (levels && levels.length) {
+      const a = Math.floor((i / bars) * levels.length);
+      const b = Math.max(a + 1, Math.floor(((i + 1) / bars) * levels.length));
+      for (let j = a; j < b; j++) level = Math.max(level, levels[j]);
+    }
+    const x = i * 3, tall = Math.max(1, level * (h - 4));
+    const matched = long && x + 2 >= from && x <= to;
+    g.fillStyle = matched ? hue : tape;
+    g.globalAlpha = matched ? 1 : long ? 0.34 : 0.62;
+    g.fillRect(x, (h - tall) / 2, 2, tall);
+  }
+  if (current && current.id === hit.id) {
+    g.globalAlpha = 1; g.fillStyle = tape;
+    g.fillRect(Math.min(w - 1.5, (player.currentTime / hit.duration) * w), 0, 1.5, h);
+  }
+}
+
+const redrawAll = () => document.querySelectorAll('.hit').forEach(draw);
+const redrawCurrent = () => current && document.querySelectorAll(`.hit[data-id="${current.id}"]`).forEach(draw);
+new ResizeObserver(redrawAll).observe(document.body);
+
+// ---------- playing
+
+function load(hit, at) {
+  const same = current && current.id === hit.id;
+  const previous = current;
+  current = hit;
+  $('deck').hidden = false;
+  $('deck-name').textContent = hit.name;
+  $('deck-folder').textContent = hit.folder;
+  if (same) {
+    player.currentTime = at;
+  } else {
+    seekTo = wanted = at;
+    converted = failed = false;
+    $('clock').textContent = 'Preparing';
+    player.src = `/audio/${hit.id}`;
+  }
+  player.play().catch(() => {});
+  document.querySelectorAll('.hit').forEach((item) => item.classList.toggle('current', item._hit.id === hit.id));
+  if (previous && !same) document.querySelectorAll(`.hit[data-id="${previous.id}"]`).forEach(draw);
+}
+
+function showTime() {
+  if (!current) return;
+  if (!failed) $('clock').textContent = `${clock(player.currentTime)} / ${clock(current.duration)}`;
+  $('fill').style.width = `${Math.min(100, (player.currentTime / current.duration) * 100)}%`;
+  redrawCurrent();
+}
+function loop() { showTime(); if (!player.paused) requestAnimationFrame(loop); }
+
+player.addEventListener('loadedmetadata', () => { if (seekTo != null) { player.currentTime = seekTo; seekTo = null; } });
+player.addEventListener('play', () => { $('toggle').innerHTML = ICON.pause; $('toggle').ariaLabel = 'Pause'; loop(); });
+player.addEventListener('pause', () => { $('toggle').innerHTML = ICON.play; $('toggle').ariaLabel = 'Play'; showTime(); });
+player.addEventListener('seeked', showTime);
+player.addEventListener('error', () => {
+  if (!current) return;
+  if (current.audio === 'none') { failed = true; $('clock').textContent = 'Online only'; return; }
+  if (converted) { failed = true; $('clock').textContent = 'This file could not be played'; return; }
+  // The browser rejected the original file, so ask for a converted copy.
+  converted = true;
+  seekTo = wanted;
+  player.src = `/audio/${current.id}?converted=1`;
+  player.play().catch(() => {});
+});
+
+const toggle = () => { if (current) player.paused ? player.play().catch(() => {}) : player.pause(); };
+$('toggle').innerHTML = ICON.play;
+$('toggle').onclick = toggle;
+$('deck-like').onclick = () => current && ask({ kind: 'like', id: current.id, name: current.name });
+$('deck-reveal').onclick = () => current && fetch(`/api/reveal/${current.id}`, { method: 'POST' });
+$('seek').onclick = (e) => {
+  if (!current) return;
+  const box = $('seek').getBoundingClientRect();
+  player.currentTime = ((e.clientX - box.left) / box.width) * current.duration;
+};
+
+$('find-duplicates').onclick = () => ask({ kind: 'duplicates' });
+
+// ---------- keyboard
+
+$('ask').onsubmit = (e) => {
+  e.preventDefault();
+  const text = $('q').value.trim();
+  if (text) ask({ kind: 'text', text });
+};
+// The whole field is the place to type, not only the letters in it.
+$('ask').onclick = (e) => { if (!e.target.closest('button, input')) $('q').focus(); };
+
+document.addEventListener('keydown', (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.target.tagName === 'INPUT' && e.target !== $('q')) {
+    // Typing a name for a mood or a collection: no shortcuts, Escape cancels.
+    if (e.key === 'Escape') { naming = null; drawFilters(); }
+    return;
+  }
+  const typing = e.target === $('q');
+  if (typing) {
+    if (e.key === 'Escape') $('q').blur();
+    if (e.key !== 'ArrowDown') return;
+  }
+  if (e.key === '/') { e.preventDefault(); $('q').focus(); $('q').select(); }
+  // Space always plays or pauses, even with a result focused (Enter is what activates a button).
+  else if (e.key === ' ') { e.preventDefault(); toggle(); }
+  else if (e.key === 's' || e.key === 'S') { $('deck-like').click(); }
+  else if ('gGbB'.includes(e.key)) {
+    // Votes on the focused result, or else on the one that is playing.
+    const item = document.activeElement.closest?.('.hit') || document.querySelector('.hit.current');
+    if (item) vote(item._hit, 'gG'.includes(e.key) ? 1 : -1, item);
+  }
+  else if (e.key === 'k' || e.key === 'K') {
+    const item = document.activeElement.closest?.('.hit') || document.querySelector('.hit.current');
+    if (item) keep(item._hit);
+  }
+  else if ((e.key === 'r' || e.key === 'R') && steer && searching()) run();
+  else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    const here = document.activeElement.closest?.('.hits');
+    const list = here || document.querySelector('.hit.current')?.closest('.hits') || document.querySelector('.hits');
+    if (!list) return;
+    e.preventDefault();
+    const buttons = [...list.querySelectorAll('.play')];
+    const at = buttons.indexOf(here ? document.activeElement.closest('.hit').querySelector('.play') : list.querySelector('.hit.current .play'));
+    const next = buttons[Math.max(0, Math.min(buttons.length - 1, at + (e.key === 'ArrowDown' ? 1 : -1)))];
+    next.focus();
+    next.scrollIntoView({ block: 'nearest' });
+    next.click();
+  }
+});
+
+// ---------- start
+
+fetch('/api/library').then((r) => r.json()).then((info) => {
+  models = info.models;
+  const saved = recall('view');
+  view = models.some((m) => m.name === saved) || (saved === 'both' && models.length > 1) ? saved : models.length > 1 ? 'both' : models[0]?.name;
+  drawViews();
+  $('library').textContent = `${info.files.toLocaleString()} files indexed`;
+  $('library').title = info.root;
+  restore();
+  loadFilters(info);
+  fetch('/api/moods').then((r) => r.json()).then((list) => { moods = list; drawFilters(); }).catch(() => {});
+  loadCollections().then(() => chooseCollection(recall('keepIn') || collections[0]?.name || keepIn));
+}).catch(() => {
+  $('main').replaceChildren(el('p', { className: 'note' }, 'The search server is not responding. Start it again with "uv run audio-embed serve".'));
+});
+</script>
+</body>
+</html>
