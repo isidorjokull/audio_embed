@@ -92,3 +92,12 @@ def test_a_made_clip_that_is_too_short_is_refused():
         splice.join(clip(20000, 1), clip(10000, 2), 8192, 16384)
     with pytest.raises(ValueError, match="no length"):
         splice.join(clip(20000, 1), clip(20000, 2), 8192, 8192)
+
+
+def test_a_fade_out_takes_the_end_of_a_clip_down_to_nothing():
+    out = splice.fade_out(clip(20000, 9000))
+    assert out.dtype == np.dtype("<i2") and len(out) == 20000
+    assert np.all(out[: 20000 - splice.FADE] == 9000)
+    tail = out[20000 - splice.FADE:, 0]
+    assert tail[0] > 8900 and tail[-1] < 100 and np.all(np.diff(tail) <= 0)
+    assert len(splice.fade_out(clip(100, 9000))) == 100   # a clip shorter than the fade

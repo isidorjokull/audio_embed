@@ -87,3 +87,12 @@ def join(original: np.ndarray, made: np.ndarray, start: int, end: int, fade: int
         ramp = (np.arange(1, after + 1) / (after + 1))[:, None]
         out[end:end + after] = made[end:end + after] * (1 - ramp) + original[end:end + after] * ramp
     return np.clip(np.rint(out), -32768, 32767).astype("<i2")
+
+
+def fade_out(samples: np.ndarray, fade: int = FADE) -> np.ndarray:
+    """A clip with its last 30 ms taken down to nothing, for an end that new audio runs straight into."""
+    out = samples.astype(np.float64)
+    n = min(fade, len(out))
+    if n:
+        out[len(out) - n:] *= (np.arange(n, 0, -1) / (n + 1))[:, None]
+    return np.clip(np.rint(out), -32768, 32767).astype("<i2")

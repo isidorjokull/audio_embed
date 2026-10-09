@@ -1,5 +1,7 @@
 import json
+import math
 import shutil
+import threading
 import time
 import wave
 from pathlib import Path
@@ -31,18 +33,33 @@ def tags(path):
     return {key.lower(): value for key, value in json.loads(out.stdout).get("format", {}).get("tags", {}).items()}
 
 
-def stand_in(calls=None, fails=False, short=0):
-    """Stable Audio 3 as far as this tool can tell: a program that writes --out from --init-audio."""
+def stand_in(calls=None, fails=False, short=0, wait=None):
+    """Stable Audio 3 as far as this tool can tell: a program that writes --out from --init-audio.
+
+    `short` makes its first clip that many samples shorter than was asked for; its first call waits for `wait`.
+    """
+    asked = []
 
     def run(command, **how):
+        asked.append(command)
+        if wait is not None and len(asked) == 1:
+            wait.wait(5)
         if calls is not None:
             calls.append((command, how))
         if fails:
             return SimpleNamespace(returncode=1, stdout="", stderr="Traceback\nValueError: no such model\n")
         out = command[command.index("--out") + 1]
         seconds = float(command[command.index("--seconds") + 1])
-        if "--inpaint-range" in command:  # a level no sample has, as long as was asked for (or `short` samples less)
-            splice.write(out, np.full((int(round(seconds * 44100)) - short, 2), 9000, dtype="<i2"))
+        if "--inpaint-range" in command:
+            # As Stable Audio 3 does it: it works in whole steps and moves the range to the nearest step. Inside the
+            # range is a level no sample has; outside it is what it was given, padded with silence.
+            given = splice.read(command[command.index("--init-audio") + 1])
+            steps = math.ceil(seconds * 44100 / 4096)
+            start, end = (min(steps, round(float(t) * 44100 / 4096)) * 4096 for t in command[command.index("--inpaint-range") + 1].split(","))
+            made = np.zeros((steps * 4096, 2), dtype="<i2")
+            made[: min(len(given), len(made))] = given[: len(made)]
+            made[start:end] = 9000
+            splice.write(out, made[: int(round(seconds * 44100)) - (short if len(asked) == 1 else 0)])
         elif "--init-audio" in command:
             shutil.copy(command[command.index("--init-audio") + 1], out)
         else:  # from text alone: a clip of the asked length
@@ -509,10 +526,17 @@ def test_a_part_is_laid_out_on_steps_inside_the_passage():
 def test_a_part_that_reaches_the_end_of_a_one_shot_takes_its_whole_tail():
     samples = level(int(3.2 * 44100))   # not a whole number of steps
     _, start, end, total, _ = generate.lay_out("part", samples, generate.Plan(0.0, 3.2, True, (2.5, 3.2), 0.0, 3.2))
-    assert end == total == len(samples)   # no sliver of the old tail is left after the part
-    made = level(len(samples), 9000)
+    # Stable Audio 3 moves the end of the range to the nearest step, so the range runs to the end of the last
+    # step it works on, past the end of the passage: no sliver of the old tail is left after the part.
+    assert end == total == 35 * 4096
+    made = level(total, 9000)
     out = generate.finish("part", samples, made, start, end, 0)
-    assert len(out) == len(samples) and np.array_equal(out[start:], made[start:])
+    assert len(out) == len(samples)                                   # the clip keeps its length
+    assert np.all(out[start: len(out) - splice.FADE] == 9000)
+    assert out[-1, 0] < 100                                           # and ends in a fade, not a cut
+    exact = level(35 * 4096)
+    _, _, end, total, _ = generate.lay_out("part", exact, generate.Plan(0.0, 3.25, True, (2.5, 3.25), 0.0, 3.25))
+    assert end == total == len(exact)
 
 
 def test_a_loop_is_turned_so_its_ends_meet_inside_the_join():
@@ -621,13 +645,13 @@ def test_a_longer_clip_is_the_sample_and_then_new_sound(tmp_path):
 
 
 def test_a_clip_that_comes_back_too_short_fails_and_the_run_goes_on(tmp_path):
-    gen = generator(tmp_path, run=stand_in(short=30000))
+    gen = generator(tmp_path, run=stand_in(short=30000))   # the first clip only
     source = tmp_path / "tone.wav"
     write_wav(source, seconds=3.0, sr=44100, channels=2)
-    clips = made(gen, source, Ask(count=2, make="longer", add=1.0), duration=3.0)
-    assert [clip["state"] for clip in clips] == ["failed", "failed"]
+    clips = made(gen, source, Ask(count=3, make="longer", add=1.0), duration=3.0)
+    assert [clip["state"] for clip in clips] == ["failed", "done", "done"]
     assert clips[0]["error"] == "Stable Audio 3 returned a shorter clip than was asked for."
-    assert gen.clips_from(str(source)) == []
+    assert len(gen.clips_from(str(source))) == 2
 
 
 def test_a_run_that_cannot_be_planned_is_refused_before_it_starts(tmp_path):
@@ -695,3 +719,55 @@ def test_a_clip_that_is_gone_cannot_be_worked_from(tmp_path):
         gen.start_from_clip("0123456789abcdef", Ask())
     with pytest.raises(ValueError, match="no longer in the cache"):
         gen.start_from_clip("../../etc/passwd", Ask())
+
+
+
+def test_a_redone_tail_leaves_none_of_the_old_tail(tmp_path):
+    gen = generator(tmp_path)
+    source = tmp_path / "tone.wav"
+    write_wav(source, seconds=3.2, sr=44100, channels=2)   # 34.45 steps: a range ending there is moved back to step 34
+    (clip,) = made(gen, source, Ask(count=1, make="part", span=(2.5, 3.2)), duration=3.2)
+    assert clip["state"] == "done"
+    out, original = splice.read(gen.clip(clip["id"])), splice.read(source)
+    assert len(out) == len(original)
+    assert np.all(out[splice.snap(2.5): len(out) - splice.FADE] == 9000)
+    assert abs(int(out[-1, 0])) < 100
+
+
+def test_the_clip_being_worked_from_is_not_cleared_by_its_own_run(tmp_path):
+    source = tmp_path / "tone.wav"
+    write_wav(source, seconds=4.0, sr=44100, channels=2)       # 706 kB a clip
+    gen = generator(tmp_path, cache_bytes=1_800_000)           # room for two and a half
+    (first,) = made(gen, source, duration=4.0)
+    time.sleep(0.02)
+    clips = finished(gen, gen.start_from_clip(first["id"], Ask(count=3, make="loop")))
+    assert [clip["state"] for clip in clips] == ["done", "done", "done"]
+    assert gen.clip(first["id"]) is not None
+
+
+def test_a_run_from_a_clip_that_was_cleared_while_it_waited_says_so(tmp_path):
+    source = tmp_path / "tone.wav"
+    write_wav(source, seconds=4.0, sr=44100, channels=2)
+    (first,) = made(generator(tmp_path), source, duration=4.0)
+    hold = threading.Event()
+    gen = generator(tmp_path, run=stand_in(wait=hold))         # the same cache, with a first run that takes its time
+    gen.start(source, key=str(source), name="tone", duration=4.0, start_s=0.0, ask=Ask(count=1))
+    waiting = gen.start_from_clip(first["id"], Ask(count=2, make="loop"))
+    gen.clip(first["id"]).unlink()
+    hold.set()
+    clips = finished(gen, waiting)
+    assert [clip["state"] for clip in clips] == ["failed", "failed"]
+    assert clips[0]["error"] == "That clip is no longer in the cache. Generate it again."
+
+
+def test_a_kept_clip_with_no_prompt_is_named_by_what_was_made(tmp_path):
+    assert generate.kept_name("Pad 04", "", set(), "loop") == "Pad 04 - loop 1.wav"
+    assert generate.kept_name("Pad 04", "", set(), "longer") == "Pad 04 - longer 1.wav"
+    assert generate.kept_name("Pad 04", "", set(), "part") == "Pad 04 - redone 1.wav"
+    assert generate.kept_name("Pad 04", "bells", set(), "loop") == "Pad 04 - bells 1.wav"
+    assert generate.kept_name("", "", set(), "loop") == "loop 1.wav"
+    gen = generator(tmp_path)
+    source = tmp_path / "tone.wav"
+    write_wav(source, seconds=4.0, sr=44100, channels=2)
+    (clip,) = made(gen, source, Ask(count=1, make="loop"), duration=4.0)
+    assert gen.keep(clip["id"]).name == "tone - loop 1.wav"

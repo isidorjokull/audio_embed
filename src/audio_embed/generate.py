@@ -51,6 +51,8 @@ JOINS = {"short": 1.0, "medium": 2.0, "long": 4.0}
 SHORTEST_PART_S = 0.2
 MIN_KEPT_S = 1.0
 MIN_LOOP_S = 2.0
+# What a kept clip with no prompt is called, by what was made; anything else is a variation.
+UNNAMED = {"part": "redone", "loop": "loop", "longer": "longer"}
 # Our name for a model -> Stable Audio 3's names for it and for the codec it needs.
 MODELS = {"medium": ("medium", "same-l"), "sfx": ("sm-sfx", "same-s"), "music": ("sm-music", "same-s")}
 WEIGHTS = {
@@ -187,10 +189,13 @@ def lay_out(make: str, samples: np.ndarray, shape: Plan) -> tuple[np.ndarray, in
     """(what Stable Audio 3 is given, the start and end of the new stretch in it, the samples to ask for, how far a loop was turned)."""
     if make == "part":
         n = len(samples)
-        start, end = splice.snap(shape.part[0]), min(splice.snap(shape.part[1]), n)
+        start, end, total = splice.snap(shape.part[0]), min(splice.snap(shape.part[1]), n), n
         if n - end < splice.STEP:
-            end = n  # reaching the end means all of it: no sliver of the old tail after the part
-        return samples, max(0, min(start, end - splice.STEP)), end, n, 0
+            # Reaching the end means all of it. Stable Audio 3 moves the end of a range to the nearest step, so the
+            # range is run to the end of the last step it works on (it pads the passage with silence itself), past
+            # the end of the passage: no sliver of the old tail is left after the part.
+            end = total = -(-n // splice.STEP) * splice.STEP
+        return samples, max(0, min(start, end - splice.STEP)), end, total, 0
     whole = splice.whole_steps(samples)
     if make == "loop":
         steps = len(whole) // splice.STEP
@@ -205,7 +210,12 @@ def lay_out(make: str, samples: np.ndarray, shape: Plan) -> tuple[np.ndarray, in
 def finish(make: str, given: np.ndarray, made: np.ndarray, start: int, end: int, by: int) -> np.ndarray:
     """The clip to keep: the new stretch joined into what was given, and a loop turned back."""
     joined = splice.join(given, made, start, end)
-    return splice.turn_back(joined, by) if make == "loop" else joined
+    if make == "loop":
+        return splice.turn_back(joined, by)
+    if make == "part" and end >= len(given):
+        # A part that reaches the end leaves the clip its length, and nothing says the new tail has died away there.
+        return splice.fade_out(joined[: len(given)])
+    return joined
 
 
 def cut(source: Path, start: float, seconds: float, out: Path) -> None:
@@ -252,9 +262,12 @@ def command(sa3: Path, ask: Ask, reference: Path | None, seconds: float, seed: i
     return cmd
 
 
-def kept_name(stem: str, prompt: str, taken: set[str]) -> str:
-    """A file name for a kept clip: its sample (if it had one), the start of its prompt, and the first number not in use."""
-    said = " ".join(re.sub(r'[\\/:*?"<>|\x00-\x1f]', " ", prompt).split()[:NAME_WORDS]) or "variation"
+def kept_name(stem: str, prompt: str, taken: set[str], make: str = "variations") -> str:
+    """A file name for a kept clip: its sample (if it had one), the start of its prompt, and the first number not in use.
+
+    A clip with no prompt is named by what was made.
+    """
+    said = " ".join(re.sub(r'[\\/:*?"<>|\x00-\x1f]', " ", prompt).split()[:NAME_WORDS]) or UNNAMED.get(make, "variation")
     start = f"{stem[:120]} - {said}" if stem else said
     taken = {name.lower() for name in taken}
     n = 1
@@ -429,6 +442,8 @@ class Generator:
         with tempfile.TemporaryDirectory() as scratch:
             reference, given, part, by = None, None, None, 0
             if run["source"] is not None:
+                if run["source"].parent == self.cache and not run["source"].is_file():
+                    raise RuntimeError("That clip is no longer in the cache. Generate it again.")
                 reference = Path(scratch) / "reference.wav"
                 cut(run["source"], shape.start_s, shape.seconds, reference)
                 if ask.make != "variations":
@@ -472,13 +487,20 @@ class Generator:
                 self._story_file(clip["id"]).write_text(json.dumps(story, ensure_ascii=False), encoding="utf-8")
                 shutil.move(out, self.cache / f"{clip['id']}.wav")
                 clip.update(state="done", seconds=length)
-                self._trim({c["id"] for c in run["clips"]})
+                self._trim(self._in_use())
 
     def _story_file(self, clip_id: str) -> Path:
         return self.cache / f"{clip_id}.json"
 
+    def _in_use(self) -> set[str]:
+        """The clips of every run that is not over, and the clips such runs are made from."""
+        with self._lock:
+            runs = [run for run in self._runs.values() if not run["done"]]
+        used = {clip["id"] for run in runs for clip in run["clips"]}
+        return used | {run["source"].stem for run in runs if run["source"] is not None and run["source"].parent == self.cache}
+
     def _trim(self, spare: set[str]) -> None:
-        """Drop the oldest clips once the cache is over its size, never one of the run in hand."""
+        """Drop the oldest clips once the cache is over its size, never one that is in `spare`."""
         total = 0
         for clip in sorted(self.cache.glob("*.wav"), key=lambda p: p.stat().st_mtime, reverse=True):
             total += clip.stat().st_size
@@ -531,7 +553,8 @@ class Generator:
             )
             if result.returncode:
                 raise RuntimeError(f"ffmpeg failed: {result.stderr.strip()[:200]}")
-            target = self.keep_root / kept_name(story["name"], story["prompt"], {p.name for p in self.keep_root.iterdir()})
+            target = self.keep_root / kept_name(story["name"], story["prompt"], {p.name for p in self.keep_root.iterdir()},
+                                                story.get("make", "variations"))
             # Opened so that an existing file is an error: nothing in the library is ever overwritten.
             with tagged.open("rb") as src, target.open("xb") as dst:
                 shutil.copyfileobj(src, dst)
