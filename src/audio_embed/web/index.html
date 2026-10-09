@@ -1273,7 +1273,7 @@ function draw(item) {
   }
   if (current && current.id === hit.id) {
     g.globalAlpha = 1; g.fillStyle = tape;
-    g.fillRect(Math.min(w - 1.5, (player.currentTime / hit.duration) * w), 0, 1.5, h);
+    g.fillRect(Math.min(w - 1.5, (position() / hit.duration) * w), 0, 1.5, h);
   }
 }
 
@@ -1283,41 +1283,135 @@ new ResizeObserver(redrawAll).observe(document.body);
 
 // ---------- playing
 
+// A loop plays on repeat, so its join is heard. The audio element stops for a few milliseconds each time it repeats,
+// a tick that is not in the file, so a loop is decoded and repeated by Web Audio, which runs straight from the last
+// sample into the first. The deck asks `position` and `playing`, whichever of the two is in use.
+const looper = {
+  works: !!window.AudioContext,
+  context: null,     // runs at the rate loops are written at (SR in splice.py), so the samples sound as they are
+  id: null,          // the hit it has or is fetching; null while the audio element is in use
+  buffer: null,
+  node: null,        // what is sounding
+  wanted: false,     // playing, or about to once the loop is decoded
+  at: 0, since: 0,   // where in the loop it was started or stopped, and when it was started by the context's clock
+};
+const looping = () => looper.id != null;
+const playing = () => (looping() ? looper.wanted : !player.paused);
+const position = () => (!looping() ? player.currentTime : !looper.node ? looper.at
+  : (looper.at + looper.context.currentTime - looper.since) % looper.buffer.duration);
+
+function sound() {
+  const node = looper.node = looper.context.createBufferSource();
+  node.buffer = looper.buffer;
+  node.loop = true;
+  node.connect(looper.context.destination);
+  node.start(0, looper.at);
+  looper.since = looper.context.currentTime;
+}
+function hush() {
+  if (!looper.node) return;
+  looper.at = position();
+  looper.node.stop();
+  looper.node.disconnect();
+  looper.node = null;
+}
+// Give the deck back to the audio element.
+function leave() {
+  hush();
+  Object.assign(looper, { id: null, buffer: null, wanted: false });
+  looper.context?.suspend();
+}
+// Fetch and decode a loop and repeat it from `at`. Where that cannot be done the audio element plays it, tick and all.
+function repeat(hit, at) {
+  if (looper.id === hit.id) { seek(at); turn(true); return; }
+  player.pause();
+  hush();
+  looper.context ||= new AudioContext({ sampleRate: 44100 });
+  looper.context.resume();
+  Object.assign(looper, { id: hit.id, buffer: null, wanted: true, at });
+  failed = false;
+  $('clock').textContent = 'Preparing';
+  showPlaying();
+  fetch(hit.src).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject()))
+    .then((bytes) => looper.context.decodeAudioData(bytes))
+    .then((buffer) => {
+      if (looper.id !== hit.id) return;   // another row was asked for meanwhile
+      looper.buffer = buffer;
+      looper.at %= buffer.duration;
+      if (looper.wanted) sound();
+    })
+    .catch(() => {
+      if (looper.id !== hit.id) return;
+      looper.works = false;
+      leave();
+      current = null;
+      load(hit, at);
+    });
+}
+
 function load(hit, at) {
-  player.loop = !!hit.loops;   // a loop plays on repeat, so its join is heard
   const same = current && current.id === hit.id;
   const previous = current;
   current = hit;
   $('deck').hidden = false;
   $('deck-name').textContent = hit.name;
   $('deck-folder').textContent = hit.clip ? `Generated${hit.near ? ', ' + hit.near : ''}` : hit.folder;
-  if (same) {
-    player.currentTime = at;
+  if (hit.loops && looper.works) {
+    repeat(hit, at);
   } else {
-    seekTo = wanted = at;
-    converted = failed = false;
-    $('clock').textContent = 'Preparing';
-    player.src = hit.src || `/audio/${hit.id}`;
+    leave();
+    player.loop = !!hit.loops;
+    if (same) {
+      player.currentTime = at;
+    } else {
+      seekTo = wanted = at;
+      converted = failed = false;
+      $('clock').textContent = 'Preparing';
+      player.src = hit.src || `/audio/${hit.id}`;
+    }
+    player.play().catch(() => {});
   }
-  player.play().catch(() => {});
   document.querySelectorAll('.hit').forEach((item) => item.classList.toggle('current', item._hit.id === hit.id));
   if (previous && !same) document.querySelectorAll(`.hit[data-id="${previous.id}"]`).forEach(draw);
 }
 
+// Play or pause, and go to a time, in whichever of the two is in use.
+function turn(on) {
+  if (!looping()) { on ? player.play().catch(() => {}) : player.pause(); return; }
+  looper.wanted = on;
+  if (!on) hush();
+  else { looper.context.resume(); if (looper.buffer && !looper.node) sound(); }
+  showPlaying();
+}
+function seek(to) {
+  if (!looping()) { player.currentTime = to; return; }
+  hush();
+  looper.at = to % (looper.buffer?.duration || Infinity);
+  if (looper.wanted && looper.buffer) sound();
+  showTime();
+}
+
 function showTime() {
   if (!current) return;
-  if (!failed) $('clock').textContent = `${clock(player.currentTime)} / ${clock(current.duration)}`;
-  $('fill').style.width = `${Math.min(100, (player.currentTime / current.duration) * 100)}%`;
+  if (!failed) $('clock').textContent = `${clock(position())} / ${clock(current.duration)}`;
+  $('fill').style.width = `${Math.min(100, (position() / current.duration) * 100)}%`;
   redrawCurrent();
 }
-function loop() { showTime(); if (!player.paused) requestAnimationFrame(loop); }
+let timing = false;   // the clock is being redrawn on every frame
+function keepTime() { showTime(); timing = playing(); if (timing) requestAnimationFrame(keepTime); }
+function showPlaying() {
+  const on = playing();
+  $('toggle').innerHTML = on ? ICON.pause : ICON.play;
+  $('toggle').ariaLabel = on ? 'Pause' : 'Play';
+  if (!on) showTime(); else if (!timing) keepTime();
+}
 
 player.addEventListener('loadedmetadata', () => { if (seekTo != null) { player.currentTime = seekTo; seekTo = null; } });
-player.addEventListener('play', () => { $('toggle').innerHTML = ICON.pause; $('toggle').ariaLabel = 'Pause'; loop(); });
-player.addEventListener('pause', () => { $('toggle').innerHTML = ICON.play; $('toggle').ariaLabel = 'Play'; showTime(); });
+player.addEventListener('play', showPlaying);
+player.addEventListener('pause', showPlaying);
 player.addEventListener('seeked', showTime);
 player.addEventListener('error', () => {
-  if (!current) return;
+  if (!current || looping()) return;
   if (current.audio === 'none') { failed = true; $('clock').textContent = 'Online only'; return; }
   if (converted || current.clip) { failed = true; $('clock').textContent = 'This file could not be played'; return; }
   // The browser rejected the original file, so ask for a converted copy.
@@ -1327,7 +1421,7 @@ player.addEventListener('error', () => {
   player.play().catch(() => {});
 });
 
-const toggle = () => { if (current) player.paused ? player.play().catch(() => {}) : player.pause(); };
+const toggle = () => { if (current) turn(!playing()); };
 $('toggle').innerHTML = ICON.play;
 $('toggle').onclick = toggle;
 $('deck-like').onclick = () => current && !current.clip && ask({ kind: 'like', id: current.id, name: current.name });
@@ -1340,7 +1434,7 @@ $('deck-generate').onclick = () => current && !current.clip && ask({
 $('seek').onclick = (e) => {
   if (!current) return;
   const box = $('seek').getBoundingClientRect();
-  player.currentTime = ((e.clientX - box.left) / box.width) * current.duration;
+  seek(((e.clientX - box.left) / box.width) * current.duration);
 };
 
 $('find-duplicates').onclick = () => ask({ kind: 'duplicates' });
