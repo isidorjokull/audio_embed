@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from . import audio, generate, renders, search
+from .labels import nfc
 from .outlines import Outlines, beside
 from .store import Store
 
@@ -53,13 +54,22 @@ def index_path(store: Store) -> Path:
     return Path(store.db.execute("PRAGMA database_list").fetchone()[2])
 
 
+def within(path: str, root: Path) -> bool:
+    """Whether `path` is under `root`, however the accents in either are spelled."""
+    return Path(nfc(path)).is_relative_to(nfc(str(root)))
+
+
 def index_folder(store: Store, embedder, root: Path, tag: str | None = None) -> None:
     from tqdm import tqdm
 
     files = audio.find_audio(root)
     outlines = Outlines(beside(index_path(store)))
     known = store.indexed(embedder.name)
-    gone = [p for p in known if Path(p).is_relative_to(root) and not Path(p).exists()]
+    # macOS accepts an accented folder name composed or decomposed, so the same file can turn
+    # up under two spellings. It keeps the one it was first indexed under.
+    spelled = {nfc(p): p for p in store.paths()}
+    names = {path: spelled.get(nfc(str(path)), str(path)) for path in files}
+    gone = [p for p in known if within(p, root) and not Path(p).exists()]
     store.remove(embedder.name, gone)
 
     todo = []
@@ -70,7 +80,7 @@ def index_folder(store: Store, embedder, root: Path, tag: str | None = None) -> 
             # A cloud placeholder: nothing to read until it is downloaded. If it was indexed
             # while it was here, that entry stays.
             online += 1
-        elif known.get(str(path)) != (stat.st_size, stat.st_mtime):
+        elif known.get(names[path]) != (stat.st_size, stat.st_mtime):
             todo.append((path, stat))
     print(
         f"[{embedder.name}] {len(files)} audio files, {len(files) - len(todo) - online} already indexed,"
@@ -86,13 +96,13 @@ def index_folder(store: Store, embedder, root: Path, tag: str | None = None) -> 
         except RuntimeError as e:
             failed.append((path, str(e)))
             continue
-        store.put(embedder.name, str(path), stat.st_size, stat.st_mtime, duration, spans, vecs)
-        outlines.put(str(path), stat.st_size, stat.st_mtime, levels)
+        store.put(embedder.name, names[path], stat.st_size, stat.st_mtime, duration, spans, vecs)
+        outlines.put(names[path], stat.st_size, stat.st_mtime, levels)
         seconds += duration
     if todo:
         print(f"[{embedder.name}] embedded {seconds / 3600:.2f} h of audio")
     if tag:
-        store.tag([str(p) for p in files], tag)
+        store.tag(list(names.values()), tag)
     for path, reason in failed:
         print(f"[{embedder.name}] FAILED {path}: {reason}", file=sys.stderr)
 
@@ -178,7 +188,7 @@ def cmd_index(args, store: Store) -> None:
         index_folder(store, load_embedder(name), root, args.tag)
     library = renders.beside(args.db)
     if library.root is not None:
-        render_files(library, [p for p in store.paths() if Path(p).is_relative_to(root)])
+        render_files(library, [p for p in store.paths() if within(p, root)])
 
 
 def cmd_renders(args, store: Store) -> None:

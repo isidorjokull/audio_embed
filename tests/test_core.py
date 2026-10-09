@@ -183,6 +183,29 @@ def test_index_is_incremental_and_prunes_deleted_files(tmp_path):
     assert store.load("fake").paths == [str(lib / "one.wav")]
 
 
+def test_a_folder_spelled_two_ways_is_indexed_once(tmp_path):
+    import unicodedata
+
+    composed = tmp_path / unicodedata.normalize("NFC", "sýning")
+    decomposed = tmp_path / unicodedata.normalize("NFD", "sýning")
+    composed.mkdir()
+    if not decomposed.is_dir():
+        pytest.skip("this file system tells the two spellings apart")
+    write_wav(composed / "one.wav", 1, seconds=1.0)
+    store = Store(tmp_path / "index.db")
+    embedder = FakeEmbedder()
+
+    index_folder(store, embedder, composed)
+    index_folder(store, embedder, decomposed, tag="foley")
+    assert len(store.load("fake").paths) == 1
+    assert embedder.calls == 1  # the same file under the other spelling is not embedded again
+    assert store.load("fake").tags == [["foley"]]
+
+    (composed / "one.wav").unlink()
+    index_folder(store, embedder, decomposed)
+    assert store.load("fake").paths == []
+
+
 def test_index_can_tag_files_that_are_already_indexed(tmp_path):
     lib = tmp_path / "lib"
     lib.mkdir()
