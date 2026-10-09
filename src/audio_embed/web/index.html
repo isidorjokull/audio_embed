@@ -379,6 +379,8 @@ function keepAddress() {
   if (query && query.kind === 'duplicates') params.set('duplicates', '1');
   if (query && query.kind === 'generate' && query.id == null) { params.set('generate', 'text'); if (query.text) params.set('prompt', query.text); }
   else if (query && query.kind === 'generate') { params.set('generate', query.id); params.set('name', query.name); if (query.start) params.set('at', query.start); }
+  if (query && query.kind === 'generate' && query.clip) params.set('clip', query.clip);
+  if (query && query.kind === 'generate' && gen.make !== 'variations') params.set('make', gen.make);
   if (lengthMin != null) params.set('min', lengthMin);
   if (lengthMax != null) params.set('max', lengthMax);
   for (const [kind, values] of Object.entries(picks)) for (const value of values) params.append('f', `${kind}:${value}`);
@@ -842,7 +844,7 @@ function showGenerate() {
   const fromText = query.id == null;   // made from the prompt alone, with no sample
   const { note, column } = listView(fromText ? 'Generate from text' : 'Generate from ', fromText ? '' : query.name, query.back);
   if (fromText && query.text) gen.prompt = query.text;
-  fetch(fromText ? '/api/generated?text=1' : `/api/generated?from=${query.id}`).then(async (r) => ({ ok: r.ok, body: await r.json() })).then(({ ok, body }) => {
+  fetch(`/api/generated?${fromText ? 'text=1' : `from=${query.id}`}${query.clip ? `&clip=${query.clip}` : ''}`).then(async (r) => ({ ok: r.ok, body: await r.json() })).then(({ ok, body }) => {
     if (mine !== ticket) return;
     if (!ok) { note.textContent = body.error; return; }
     if (body.problem) { note.textContent = body.problem; return; }
@@ -856,6 +858,9 @@ function showGenerate() {
     const of = working ? working.id : query.id;
     if (gen.of !== of) { gen.of = of; gen.span = null; gen.marker = null; }   // a part belongs to one sample
     if (noSample) gen.make = 'variations';
+    const origin = el('p', { className: 'note wide', hidden: !working && !body.gone });
+    if (working) origin.append(`Working from ${base.name}, a clip that has not been kept. `, plain(fromText ? 'Back to the text' : 'Back to the file', () => ask({ ...query, clip: undefined })));
+    else if (body.gone) origin.textContent = 'That clip is no longer in the cache, so this is what it was made from.';
 
     // The sample itself, with the passage the clips will be made from marked on it.
     const sample = el('ol', { className: 'hits' });
@@ -962,12 +967,12 @@ function showGenerate() {
       }).catch(() => { if (mine === ticket) { says.textContent = 'The search server is not responding.'; go.disabled = false; } });
     };
 
-    if (noSample) column.append(panel, clips);
+    if (noSample) column.append(origin, panel, clips);
     else if (!working && body.source.audio === 'none') {
       column.append(sample, el('p', { className: 'note wide' }, 'The original is online-only and its render is not within reach, so there is nothing to generate from. Connect the render drive, or download the file.'));
       return;
     }
-    else column.append(sample, panel, clips);
+    else column.append(origin, sample, panel, clips);
     if (!body.keeps_in) says.textContent = 'No folder has been chosen for kept clips yet, so clips can be made but not kept. Run "audio-embed generator --keep-in FOLDER" once.';
     panel.querySelector('input').focus();
   }).catch(() => { if (mine === ticket) note.textContent = 'The search server is not responding. Start it again with "uv run audio-embed serve".'; });
@@ -993,8 +998,13 @@ function restore() {
   else if (params.get('like')) ask({ kind: 'like', id: Number(params.get('like')), name: params.get('name') || 'this file' });
   else if (params.get('collection')) ask({ kind: 'collection', name: params.get('collection') });
   else if (params.get('duplicates')) ask({ kind: 'duplicates' });
-  else if (params.get('generate') === 'text') ask({ kind: 'generate', text: params.get('prompt') || '' });
-  else if (params.get('generate')) ask({ kind: 'generate', id: Number(params.get('generate')), name: params.get('name') || 'this file', start: Number(params.get('at')) || 0 });
+  else if (params.get('generate')) {
+    if (MAKES.some(([value]) => value === params.get('make'))) gen.make = params.get('make');
+    const clip = /^[0-9a-f]{16}$/.test(params.get('clip') || '') ? params.get('clip') : undefined;
+    ask(params.get('generate') === 'text'
+      ? { kind: 'generate', text: params.get('prompt') || '', clip }
+      : { kind: 'generate', id: Number(params.get('generate')), name: params.get('name') || 'this file', start: Number(params.get('at')) || 0, clip });
+  }
   else start();
 }
 
@@ -1160,7 +1170,10 @@ function row(hit, rank, model) {
     ...(hit.audio === 'none' ? [el('span', { className: 'tag', title: 'The original is online-only and its render is not within reach.' }, 'online only')] : []),
     el('span', { className: 'folder' }, hit.near || hit.folder));
   // A clip that has not been kept is not in the index, so there is nothing to find similar to it yet.
-  const like = hit.clip ? el('span', { className: 'like' }) : el('button', { className: 'plain like', type: 'button' }, 'Find similar');
+  // It can be worked from instead: looped, made longer, varied again.
+  const like = hit.clip
+    ? Object.assign(plain('Work from this', () => ask({ ...query, clip: hit.clip })), { className: 'plain like', title: 'Make this clip the sample: redo a part of it, loop it, make it longer or vary it again' })
+    : el('button', { className: 'plain like', type: 'button' }, 'Find similar');
   const wave = el('canvas', { className: 'wave', ariaHidden: 'true' });
   const item = el('li', { className: 'hit' },
     el('div', { className: 'hit-head' },
