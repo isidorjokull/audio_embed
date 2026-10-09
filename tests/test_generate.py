@@ -638,3 +638,60 @@ def test_a_run_that_cannot_be_planned_is_refused_before_it_starts(tmp_path):
         gen.start(source, key=str(source), name="tone", duration=1.0, start_s=0.0, ask=Ask(make="loop"))
     with pytest.raises(ValueError, match="from text alone"):
         gen.start_from_text(Ask(prompt="rain", make="loop"))
+
+
+BASE = {"name": "Pad 04", "start_s": 0.0, "seconds": 20.0, "whole": True, "prompt": "", "avoid": "",
+        "distance": "medium", "strength": 1.0, "model": "medium", "seed": 7}
+
+
+def test_description_says_what_was_made_anew():
+    assert generate.describe({**BASE, "make": "part", "part": [12.0, 15.0], "prompt": "bells"}) == (
+        'Generated from "Pad 04". 0:12 to 0:15 regenerated. Prompt: bells. Model: Stable Audio 3 medium. Seed: 7.')
+    assert generate.describe({**BASE, "make": "loop", "join": 2.0}) == (
+        'Generated from "Pad 04". Made to loop (2 s join). Model: Stable Audio 3 medium. Seed: 7.')
+    assert generate.describe({**BASE, "make": "longer", "part": [20.0, 50.0], "add": 30.0}) == (
+        'Generated from "Pad 04". Continued for 30 s from 0:20. Model: Stable Audio 3 medium. Seed: 7.')
+
+
+def test_description_tells_the_whole_chain():
+    first = generate.describe({**BASE, "distance": "far", "seed": 3})
+    then = generate.describe({**BASE, "make": "loop", "join": 2.0, "seed": 9, "parent": first})
+    assert then == ('Generated from "Pad 04". Distance: far. Model: Stable Audio 3 medium. Seed: 3.'
+                    " Then made to loop (2 s join). Model: Stable Audio 3 medium. Seed: 9.")
+    again = generate.describe({**BASE, "distance": "close", "seed": 4, "parent": then})
+    assert again.endswith("Then a variation of it, distance close. Model: Stable Audio 3 medium. Seed: 4.")
+
+
+def test_a_story_from_before_this_change_is_a_variation():
+    assert generate.describe(dict(BASE)) == 'Generated from "Pad 04". Distance: medium. Model: Stable Audio 3 medium. Seed: 7.'
+
+
+def test_a_run_can_start_from_a_clip_and_is_filed_with_it(tmp_path):
+    calls = []
+    gen = generator(tmp_path, run=stand_in(calls))
+    source = tmp_path / "tone.wav"
+    write_wav(source, seconds=4.0, sr=44100, channels=2)
+    (first,) = made(gen, source, Ask(count=1, prompt="shimmer"), duration=4.0)
+
+    run = gen.start_from_clip(first["id"], Ask(count=1, make="loop"))
+    for _ in range(500):
+        if gen.progress(run)["done"]:
+            break
+        time.sleep(0.01)
+    (second,) = gen.progress(run)["clips"]
+    assert second["state"] == "done"
+    # It was cut from the clip in the cache, not from the library file.
+    assert calls[-1][0][calls[-1][0].index("--init-audio") + 1] != str(source)
+    story = gen.story(second["id"])
+    assert (story["key"], story["name"], story["make"]) == (str(source), "tone", "loop")
+    assert story["parent"] == generate.describe(gen.story(first["id"]))
+    assert [c["id"] for c in gen.clips_from(str(source))] == [first["id"], second["id"]]
+    assert "Then made to loop" in generate.describe(story)
+
+
+def test_a_clip_that_is_gone_cannot_be_worked_from(tmp_path):
+    gen = generator(tmp_path)
+    with pytest.raises(ValueError, match="no longer in the cache"):
+        gen.start_from_clip("0123456789abcdef", Ask())
+    with pytest.raises(ValueError, match="no longer in the cache"):
+        gen.start_from_clip("../../etc/passwd", Ask())

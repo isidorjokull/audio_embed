@@ -22,6 +22,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -263,20 +264,34 @@ def kept_name(stem: str, prompt: str, taken: set[str]) -> str:
 
 
 def describe(made: dict) -> str:
-    """Where a clip came from, in a sentence or two, for its comment tag."""
+    """Where a clip came from, in a sentence or two, for its comment tag. A clip made from a clip tells the whole chain."""
 
     def clock(s):
         return f"{int(s // 60)}:{int(s % 60):02d}"
 
+    make, parent, part = made.get("make", "variations"), made.get("parent"), made.get("part")
     from_text = made.get("key") == FROM_TEXT
-    whole = made.get("whole", made["start_s"] == 0)
-    at = "" if whole else f" ({clock(made['start_s'])} to {clock(made['start_s'] + made['seconds'])})"
-    parts = ["Generated from text." if from_text else f'Generated from "{made["name"]}"{at}.']
+    if make == "part":
+        step = f"{clock(part[0])} to {clock(part[1])} regenerated."
+    elif make == "loop":
+        step = f"made to loop ({made['join']:g} s join)."
+    elif make == "longer":
+        step = f"continued for {made['add']:g} s from {clock(part[0])}."
+    else:
+        step = f"a variation of it, distance {made['distance']}." if parent else ""
+    if parent:
+        parts = [parent, f"Then {step}"]
+    else:
+        whole = made.get("whole", made["start_s"] == 0)
+        at = "" if whole else f" ({clock(made['start_s'])} to {clock(made['start_s'] + made['seconds'])})"
+        parts = ["Generated from text." if from_text else f'Generated from "{made["name"]}"{at}.']
+        if step:
+            parts.append(step[0].upper() + step[1:])
     if made["prompt"]:
         parts.append(f"Prompt: {made['prompt'].rstrip('.')}.")
     if made["avoid"]:
         parts.append(f"Avoid: {made['avoid'].rstrip('.')}.")
-    if not from_text:
+    if make == "variations" and not from_text and not parent:
         parts.append(f"Distance: {made['distance']}.")
     if made["strength"] != 1:
         parts.append(f"Prompt strength: {made['strength']:g}.")
@@ -363,6 +378,15 @@ class Generator:
             raise ValueError("Type what to generate first.")
         seconds = ask.seconds or TEXT_SECONDS
         return self._queue_run(None, FROM_TEXT, "", Plan(0.0, seconds, True, None, 0.0, seconds), ask)
+
+    def start_from_clip(self, clip_id: str, ask: Ask) -> str:
+        """Queue a run whose sample is a clip in the cache. Its clips are filed with the clip they came from."""
+        clip, story = self.clip(clip_id), self.story(clip_id)
+        if clip is None or story is None:
+            raise ValueError("That clip is no longer in the cache. Generate it again.")
+        with wave.open(str(clip), "rb") as f:
+            duration = f.getnframes() / f.getframerate()
+        return self._queue_run(clip, story["key"], story["name"], plan(duration, 0.0, ask), ask, parent=describe(story))
 
     def _queue_run(self, source: Path | None, key: str, name: str, shape: Plan, ask: Ask, parent: str | None = None) -> str:
         run = {
