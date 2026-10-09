@@ -102,6 +102,21 @@
   .chip:hover { color: var(--tape); border-color: var(--dim); background: var(--raised); }
   .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, .5); }
   .chip small { margin-left: 6px; font: 11px var(--figures); }
+  /* The length slider: two range inputs laid over one track, each showing only its handle. */
+  .range { --thumb: 14px; position: relative; flex: 1 1 220px; max-width: 300px; height: 18px; align-self: center; margin-left: 8px; cursor: pointer; }
+  .range::before, .range i { content: ""; position: absolute; top: 7px; height: 4px; border-radius: 2px; }
+  .range::before { left: 0; right: 0; background: var(--well); box-shadow: var(--sunk), inset 0 0 0 1px var(--edge); }
+  .range i { left: calc(var(--from) * (100% - var(--thumb)) + var(--thumb) / 2); right: calc((1 - var(--to)) * (100% - var(--thumb)) + var(--thumb) / 2); background: var(--accent-lit); }
+  .range.all i { background: var(--edge); }
+  .range input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; background: none; -webkit-appearance: none; appearance: none; pointer-events: none; }
+  .range input:focus-visible { outline: none; }
+  .range input::-webkit-slider-runnable-track { height: 100%; background: none; }
+  .range input::-webkit-slider-thumb { -webkit-appearance: none; pointer-events: auto; width: var(--thumb); height: var(--thumb); margin-top: 2px; border: 0; border-radius: 50%; background: var(--tape); box-shadow: 0 1px 3px rgba(0, 0, 0, .6); cursor: grab; }
+  .range input::-moz-range-track { background: none; }
+  .range input::-moz-range-thumb { pointer-events: auto; width: var(--thumb); height: var(--thumb); border: 0; border-radius: 50%; background: var(--tape); box-shadow: 0 1px 3px rgba(0, 0, 0, .6); cursor: grab; }
+  .range input:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent-ink); }
+  .range input:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent-ink); }
+  .range-says { min-width: 8.5em; margin-left: 6px; color: var(--dim); font: 13px var(--figures); white-space: nowrap; }
   .filters .plain { font-size: 13px; margin-left: 6px; }
   .naming { display: inline-flex; gap: 6px; align-items: baseline; }
   .naming input { width: 15em; padding: 3px 9px; background: var(--well); border: 1px solid var(--dim); border-radius: 3px; box-shadow: var(--sunk); font-size: 13px; }
@@ -276,7 +291,8 @@ let models = [];        // [{name, label, files}]
 let view = 'both';      // a model name, or 'both'
 let query = null;       // {kind: 'text', text}, {kind: 'like', id, name}, {kind: 'collection', name}, {kind: 'duplicates'}, {kind: 'generate', id, name, start} or {kind: 'generate', text}
 let offered = [];       // filter groups from the server: [{kind, values: [{value, count}]}]
-let lengthKey = 'any';  // which of LENGTHS is picked
+let lengthMin = null;   // the shortest length shown, in seconds; null is no limit
+let lengthMax = null;   // the longest, likewise
 let picks = {};         // kind -> Set of picked values
 let openKind = null;    // the filter group whose values are showing
 let steer = false;      // rank searches by my votes on them; always starts off
@@ -359,7 +375,8 @@ function keepAddress() {
   if (query && query.kind === 'duplicates') params.set('duplicates', '1');
   if (query && query.kind === 'generate' && query.id == null) { params.set('generate', 'text'); if (query.text) params.set('prompt', query.text); }
   else if (query && query.kind === 'generate') { params.set('generate', query.id); params.set('name', query.name); if (query.start) params.set('at', query.start); }
-  if (lengthKey !== 'any') params.set('len', lengthKey);
+  if (lengthMin != null) params.set('min', lengthMin);
+  if (lengthMax != null) params.set('max', lengthMax);
   for (const [kind, values] of Object.entries(picks)) for (const value of values) params.append('f', `${kind}:${value}`);
   const text = params.toString();
   history.replaceState(null, '', text ? '#' + text : location.pathname);
@@ -367,23 +384,28 @@ function keepAddress() {
 
 // ---------- filters
 
+// Where a handle of the length slider can rest, in seconds. They are evenly spaced along it,
+// so it is finest where most files are: half the library is under a second, and a few run for hours.
+const STOPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800];
 const LENGTHS = [
-  { key: 'any', label: 'Any' },
-  { key: 'under2', label: 'Under 2 s', max: 2 },
-  { key: '2to10', label: '2 to 10 s', min: 2, max: 10 },
-  { key: '10to60', label: '10 to 60 s', min: 10, max: 60 },
-  { key: '1to5m', label: '1 to 5 min', min: 60, max: 300 },
-  { key: 'over5m', label: 'Over 5 min', min: 300 },
+  { label: 'Any', min: null, max: null },
+  { label: 'Under 2 s', min: null, max: 2 },
+  { label: '2 to 10 s', min: 2, max: 10 },
+  { label: '10 to 60 s', min: 10, max: 60 },
+  { label: '1 to 5 min', min: 60, max: 300 },
+  { label: 'Over 5 min', min: 300, max: null },
 ];
+// Addresses saved before the slider named one of the presets.
+const OLD_LENGTHS = { under2: [null, 2], '2to10': [2, 10], '10to60': [10, 60], '1to5m': [60, 300], over5m: [300, null] };
 const KIND_NAMES = { sound: 'Sound', bpm: 'BPM' };
 const kindName = (kind) => KIND_NAMES[kind] || kind[0].toUpperCase() + kind.slice(1);
-const filtering = () => lengthKey !== 'any' || Object.values(picks).some((values) => values.size);
+const filtering = () => lengthMin != null || lengthMax != null || Object.values(picks).some((values) => values.size);
+const span = (s) => (s < 60 ? `${s} s` : `${s / 60} min`);
 
 function filterParams() {
-  const length = LENGTHS.find((l) => l.key === lengthKey) || LENGTHS[0];
   let text = '';
-  if (length.min != null) text += `&min=${length.min}`;
-  if (length.max != null) text += `&max=${length.max}`;
+  if (lengthMin != null) text += `&min=${lengthMin}`;
+  if (lengthMax != null) text += `&max=${lengthMax}`;
   for (const [kind, values] of Object.entries(picks)) for (const value of values) text += `&f=${encodeURIComponent(`${kind}:${value}`)}`;
   return text;
 }
@@ -420,21 +442,80 @@ function filterRow(name, ...controls) {
   return row;
 }
 
+// The presets and the slider are two ways to set the same pair of limits: a preset moves the
+// handles, and it lights up whenever the handles are on its range.
+function lengthRow() {
+  const last = STOPS.length + 1;   // position 0 is "no shortest" and the last one "no longest"
+  const handle = (label, value) => el('input', { type: 'range', min: 0, max: last, step: 1, value, ariaLabel: label });
+  const low = handle('Shortest length', lengthMin == null ? 0 : STOPS.indexOf(lengthMin) + 1);
+  const high = handle('Longest length', lengthMax == null ? last : STOPS.indexOf(lengthMax) + 1);
+  const track = el('span', { className: 'range' }, el('i'), low, high);
+  const says = el('output', { className: 'range-says' });
+  const chips = LENGTHS.map((l) => chip(l.label, false, null, () => { lengthMin = l.min; lengthMax = l.max; changed(); }));
+
+  const show = () => {
+    const any = lengthMin == null && lengthMax == null;
+    track.style.setProperty('--from', low.value / last);
+    track.style.setProperty('--to', high.value / last);
+    track.classList.toggle('all', any);
+    low.ariaValueText = lengthMin == null ? 'No shortest length' : span(lengthMin);
+    high.ariaValueText = lengthMax == null ? 'No longest length' : span(lengthMax);
+    says.textContent = any ? 'Any length' : lengthMin == null ? `Under ${span(lengthMax)}`
+      : lengthMax == null ? `Over ${span(lengthMin)}` : `${span(lengthMin)} to ${span(lengthMax)}`;
+    LENGTHS.forEach((l, i) => { chips[i].ariaPressed = String(l.min === lengthMin && l.max === lengthMax); });
+  };
+  const moved = (mine) => {
+    // The handles stop one step apart, so the range is never empty.
+    if (+low.value >= +high.value) mine.value = mine === low ? +high.value - 1 : +low.value + 1;
+    lengthMin = +low.value === 0 ? null : STOPS[low.value - 1];
+    lengthMax = +high.value === last ? null : STOPS[high.value - 1];
+    show();
+  };
+  // Dragging only moves the handle and its readout. The search runs again on letting go,
+  // which is also when the rows are rebuilt (a rebuild mid-drag would drop the handle).
+  for (const mine of [low, high]) { mine.oninput = () => moved(mine); mine.onchange = changed; }
+  // A click on the track brings the nearer handle to it.
+  track.onclick = (e) => {
+    if (e.target.tagName === 'INPUT') return;
+    const box = track.getBoundingClientRect();
+    const thumb = parseFloat(getComputedStyle(track).getPropertyValue('--thumb'));
+    const to = Math.max(0, Math.min(last, Math.round(((e.clientX - box.left - thumb / 2) / (box.width - thumb)) * last)));
+    const mine = Math.abs(to - low.value) <= Math.abs(to - high.value) ? low : high;
+    mine.value = to;
+    moved(mine);
+    changed();
+  };
+  show();
+  return filterRow('Length', ...chips, track, says);
+}
+
+// Leaving out lossy files is a single choice, so it has a row of its own rather than a group to open.
+function qualityRow() {
+  const lossless = offered.find((group) => group.kind === 'quality')?.values.find((v) => v.value === 'lossless');
+  const pick = (on) => { if (on) picks.quality = new Set(['lossless']); else delete picks.quality; changed(); };
+  return filterRow('Quality',
+    chip('Any', !picks.quality, null, () => pick(false)),
+    chip('Lossless only', !!picks.quality?.has('lossless'), lossless?.count, () => pick(true)));
+}
+
+const CONTROLS = 'button, input[type="range"]';
 let shownKind = null;   // the group whose values were showing at the last draw
 
-// Length is always shown. Every other group is a button that opens its values, one group
-// at a time, so a dozen kinds of label do not bury the results.
+// Length and quality are always shown. Every other group is a button that opens its values,
+// one group at a time, so a dozen kinds of label do not bury the results.
 function drawFilters() {
-  // The rows are rebuilt whenever anything changes, so note which button has the focus.
+  // The rows are rebuilt whenever anything changes, so note which control has the focus.
   const at = document.activeElement;
-  const from = at?.tagName === 'BUTTON' ? at.closest('#filters .filter') : null;
-  const held = from && { row: from.dataset.row, nth: [...from.querySelectorAll('button')].indexOf(at) };
+  const from = at?.matches(CONTROLS) ? at.closest('#filters .filter') : null;
+  const held = from && { row: from.dataset.row, nth: [...from.querySelectorAll(CONTROLS)].indexOf(at) };
 
-  const rows = [moodRow(), filterRow('Length',
-    ...LENGTHS.map((l) => chip(l.label, l.key === lengthKey, null, () => { lengthKey = l.key; changed(); })))];
-  if (offered.length) {
+  const rows = [moodRow(), lengthRow()];
+  // Quality is offered once the files carry that label ("audio-embed labels" gives it to older ones).
+  if (picks.quality || offered.some((group) => group.kind === 'quality')) rows.push(qualityRow());
+  const grouped = offered.filter((group) => group.kind !== 'quality');
+  if (grouped.length) {
     const groups = filterRow('Filter by');
-    for (const group of offered) {
+    for (const group of grouped) {
       const picked = [...(picks[group.kind] || [])];
       const button = el('button', { className: 'group', type: 'button', ariaExpanded: String(openKind === group.kind) },
         el('span', {}, picked.length ? `${kindName(group.kind)}: ${picked.join(', ')}` : kindName(group.kind)));
@@ -444,11 +525,11 @@ function drawFilters() {
     }
     if (filtering()) {
       const clear = el('button', { className: 'plain', type: 'button' }, 'Clear filters');
-      clear.onclick = () => { lengthKey = 'any'; picks = {}; changed(); };
+      clear.onclick = () => { lengthMin = lengthMax = null; picks = {}; changed(); };
       groups.append(clear);
     }
     rows.push(groups);
-    const open = offered.find((group) => group.kind === openKind);
+    const open = grouped.find((group) => group.kind === openKind);
     if (open) {
       const picked = picks[open.kind] || new Set();
       const tray = el('div', { className: 'filter values', role: 'group', ariaLabel: kindName(open.kind) },
@@ -473,8 +554,8 @@ function drawFilters() {
   const input = $('filters').querySelector('.naming input');
   if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
   else if (held) {
-    const buttons = $('filters').querySelectorAll(`.filter[data-row="${held.row}"] button`);
-    (buttons[held.nth] || buttons[buttons.length - 1])?.focus();
+    const controls = $('filters').querySelectorAll(`.filter[data-row="${held.row}"] :is(${CONTROLS})`);
+    (controls[held.nth] || controls[controls.length - 1])?.focus();
   }
 }
 
@@ -820,7 +901,9 @@ function loadFilters(info) {
 
 function restore() {
   const params = new URLSearchParams(location.hash.slice(1));
-  if (LENGTHS.some((l) => l.key === params.get('len'))) lengthKey = params.get('len');
+  const stop = (key) => (STOPS.includes(Number(params.get(key))) ? Number(params.get(key)) : null);
+  [lengthMin, lengthMax] = Object.hasOwn(OLD_LENGTHS, params.get('len') ?? '') ? OLD_LENGTHS[params.get('len')] : [stop('min'), stop('max')];
+  if (lengthMin != null && lengthMax != null && lengthMin >= lengthMax) lengthMax = null;
   for (const item of params.getAll('f')) {
     const at = item.indexOf(':');
     if (at > 0) (picks[item.slice(0, at)] || (picks[item.slice(0, at)] = new Set())).add(item.slice(at + 1));

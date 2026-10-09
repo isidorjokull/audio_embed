@@ -16,8 +16,8 @@ audition by hand.
 - **Search by example.** "More like this one", from any result.
 - **Long files match on a passage.** A 40-minute recording is found by its best 10 seconds, and
   playback starts there.
-- **Filters.** Length, tempo, key, loop or one-shot, category, pack, and anything else read from
-  file names, folders and embedded tags. A sound category ("drone", "impact", "texture"...) is
+- **Filters.** Length (presets or a slider), lossless only, tempo, key, loop or one-shot, category,
+  pack, and anything else read from file names, folders and embedded tags. A sound category ("drone", "impact", "texture"...) is
   assigned to every file automatically.
 - **Votes that steer.** Thumbs up or down on results; a search can then be re-ranked toward what
   you liked and away from what you rejected. Votes on similarly worded searches count too, so a

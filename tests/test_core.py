@@ -949,3 +949,54 @@ def test_a_real_very_short_sample_is_kept_as_it_is(tmp_path):
     library.ensure(source, stat.st_size, stat.st_mtime)
     copy = library.copy_of(str(source))
     assert copy.suffix == ".wav" and copy.read_bytes() == source.read_bytes()
+
+
+def test_quality_is_read_from_the_codec_not_the_extension():
+    from audio_embed import labels
+
+    for codec, suffix, want in [
+        ("pcm_s24le", ".wav", "lossless"),
+        ("pcm_f32be", ".aif", "lossless"),
+        ("flac", ".flac", "lossless"),
+        ("alac", ".m4a", "lossless"),  # Apple Lossless shares its extension with AAC
+        ("aac", ".m4a", "lossy"),
+        ("mp3", ".mp3", "lossy"),
+        ("vorbis", ".ogg", "lossy"),
+        ("adpcm_ms", ".wav", "lossy"),  # a WAV is only a wrapper, and this one holds compressed audio
+    ]:
+        assert labels.quality(codec, suffix) == want, (codec, suffix)
+
+
+def test_quality_falls_back_to_the_extension_when_the_codec_is_unknown():
+    from audio_embed import labels
+
+    assert labels.quality("", ".wav") == "lossless"
+    assert labels.quality("", ".AIFF") == "lossless"
+    assert labels.quality("", ".MP3") == "lossy"
+    assert labels.quality("", ".m4a") == "lossy"
+
+
+def test_a_file_is_labelled_with_the_quality_of_what_it_holds(tmp_path):
+    import subprocess
+
+    from audio_embed import labels
+
+    plain = tmp_path / "plain.wav"
+    write_wav(plain, 1, seconds=0.5)
+    squeezed = tmp_path / "squeezed.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-i", str(plain), "-c:a", "adpcm_ms", str(squeezed)], check=True)
+    assert {v for k, v in labels.read(plain, {}) if k == "quality"} == {"lossless"}
+    assert {v for k, v in labels.read(squeezed, {}) if k == "quality"} == {"lossy"}
+
+
+def test_quality_of_an_online_only_file_is_the_one_stored_while_it_was_here(tmp_path):
+    from audio_embed import labels
+
+    squeezed = tmp_path / "squeezed.wav"
+    squeezed.write_bytes(b"")
+    found = labels.read(squeezed, {}, {("quality", "lossy")})
+    assert {v for k, v in found if k == "quality"} == {"lossy"}  # not what its extension suggests
+
+    never_read = tmp_path / "never read.mp3"
+    never_read.write_bytes(b"")
+    assert ("quality", "lossy") in labels.read(never_read, {}, set())

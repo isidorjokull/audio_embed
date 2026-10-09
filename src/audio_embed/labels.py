@@ -1,7 +1,7 @@
 """Classifiers read off a file without listening to it.
 
 A label is a (kind, value) pair such as ("bpm", "82") or ("category", "kick").
-They come from the file's name and folders, its embedded metadata, and an
+They come from the file's name and folders, its embedded metadata and codec, and an
 optional list of folders that say what everything under them is.
 """
 
@@ -77,8 +77,13 @@ CATEGORIES = {
 }
 WORDS = {word: category for category, words in CATEGORIES.items() for word in words.split()}
 
-# The kinds `from_metadata` can give. They are kept for a file whose contents are not at hand.
-FROM_METADATA = {"genre", "artist", "encoded by", "year", "bpm", "description"}
+# The kinds read from inside a file. They are kept for a file whose contents are not at hand.
+FROM_CONTENTS = {"genre", "artist", "encoded by", "year", "bpm", "description", "quality"}
+
+# Codecs that keep every sample, besides plain PCM. Anything else has thrown some of the sound away.
+LOSSLESS_CODECS = {"flac", "alac", "ape", "wavpack", "tta", "mlp", "truehd", "shorten", "mp4als", "wmalossless"}
+# What an extension usually holds, for a file whose codec was never read.
+LOSSY_EXTENSIONS = {".mp3", ".m4a", ".ogg", ".opus"}
 
 # How many folders above the file are read for category and loop words.
 NEARBY_FOLDERS = 4
@@ -187,6 +192,17 @@ def from_metadata(tags: dict[str, str]) -> Labels:
     return out
 
 
+def quality(codec: str, suffix: str) -> str:
+    """"lossless" or "lossy", by the codec of the audio, or by the extension when that is not known.
+
+    The extension alone is not enough: an .m4a holds AAC or Apple Lossless, and a
+    .wav can hold compressed audio.
+    """
+    if not codec:
+        return "lossy" if suffix.lower() in LOSSY_EXTENSIONS else "lossless"
+    return "lossless" if codec.startswith("pcm_") or codec in LOSSLESS_CODECS else "lossy"
+
+
 def from_location(path: Path, locations: dict[str, dict[str, str]]) -> Labels:
     """Labels given to everything under a folder.
 
@@ -213,30 +229,38 @@ def load_locations(path: Path) -> dict[str, dict[str, str]]:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
-def read_tags(path: Path) -> dict[str, str]:
-    """The file's embedded tags, or nothing if it cannot be read."""
+def probe(path: Path) -> tuple[dict[str, str], str]:
+    """The file's embedded tags and the codec of its audio, or nothing if it cannot be read."""
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format_tags:stream_tags", "-of", "json",
-         str(path)],
+        ["ffprobe", "-v", "error", "-show_entries", "format_tags:stream_tags:stream=codec_name,codec_type",
+         "-of", "json", str(path)],
         capture_output=True, text=True,
     )
     try:
         probed = json.loads(out.stdout)
     except json.JSONDecodeError:
-        return {}
+        return {}, ""
     tags = dict(probed.get("format", {}).get("tags", {}))
+    codec = ""
     for stream in probed.get("streams", []):
         tags.update(stream.get("tags", {}))
-    return {key.lower(): str(value) for key, value in tags.items()}
+        # Cover art is a stream too, so take the codec of the first one that is audio.
+        if not codec and stream.get("codec_type") == "audio":
+            codec = stream.get("codec_name", "")
+    return {key.lower(): str(value) for key, value in tags.items()}, codec
 
 
 def read(path: Path, locations: dict[str, dict[str, str]], earlier: Labels | None = None) -> Labels:
     """Every label for one file.
 
     `earlier` is what the file was labelled with before. With it, a file that is
-    online-only (so its tags cannot be read) keeps the labels its tags once gave.
+    online-only (so its contents cannot be read) keeps the labels its contents once gave.
     """
     out = from_path(path) | from_location(path, locations)
     if earlier is not None and not is_local(path):
-        return out | {pair for pair in earlier if pair[0] in FROM_METADATA}
-    return out | from_metadata(read_tags(path))
+        kept = {pair for pair in earlier if pair[0] in FROM_CONTENTS}
+        if not any(kind == "quality" for kind, _ in kept):
+            kept.add(("quality", quality("", path.suffix)))
+        return out | kept
+    tags, codec = probe(path)
+    return out | from_metadata(tags) | {("quality", quality(codec, path.suffix))}
