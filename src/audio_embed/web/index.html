@@ -853,7 +853,8 @@ function showGenerate() {
 
     // The clip the panel works from in place of the file, if one was asked for.
     const working = body.working_from;
-    const base = working ? clipHit(working, working.n) : body.source;
+    // Numbered as its row in the list below is, so the two say the same name.
+    const base = working ? clipHit(working, body.clips.findIndex((clip) => clip.id === working.id) + 1 || working.n) : body.source;
     const noSample = fromText && !working;
     const of = working ? working.id : query.id;
     if (gen.of !== of) { gen.of = of; gen.span = null; gen.marker = null; }   // a part belongs to one sample
