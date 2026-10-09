@@ -802,8 +802,40 @@ function keepClipButton(hit) {
   return button;
 }
 
-// Marking a part or a marker on the sample's waveform.
-function markOn(item) {}
+// Marking on the sample's waveform: a drag marks the part to redo, and for Longer a click
+// sets where new sound takes over. A plain click on a part still plays from there.
+function markOn(item) {
+  if (gen.make !== 'part' && gen.make !== 'longer') return;
+  const canvas = item.querySelector('canvas'), hit = item._hit;
+  const play = canvas.onclick;
+  const at = (e) => {
+    const box = canvas.getBoundingClientRect();
+    return Math.round(Math.max(0, Math.min(1, (e.clientX - box.left) / box.width)) * hit.duration * 100) / 100;
+  };
+  let from = null, dragged = false;
+  canvas.style.cursor = gen.make === 'part' ? 'crosshair' : 'col-resize';
+  canvas.onpointerdown = (e) => {
+    if (gen.make !== 'part') return;
+    from = at(e);
+    dragged = false;
+    canvas.setPointerCapture(e.pointerId);
+  };
+  canvas.onpointermove = (e) => {
+    if (from == null) return;
+    const to = at(e);
+    if ((Math.abs(to - from) / hit.duration) * canvas.clientWidth < 4) return;   // a click that wobbled
+    dragged = true;
+    gen.span = hit.part = [Math.min(from, to), Math.max(from, to)];
+    draw(item);
+  };
+  canvas.onpointerup = () => { from = null; };
+  canvas.onpointercancel = () => { from = null; };
+  canvas.onclick = (e) => {
+    if (dragged) { dragged = false; return; }   // the click that ends a drag
+    if (gen.make === 'longer') { gen.marker = hit.marker = Math.max(1, at(e)); draw(item); return; }
+    play(e);
+  };
+}
 
 function showGenerate() {
   const mine = ++ticket;
@@ -1184,6 +1216,16 @@ function draw(item) {
     g.fillStyle = matched ? hue : tape;
     g.globalAlpha = matched ? 1 : long ? 0.34 : 0.62;
     g.fillRect(x, (h - tall) / 2, 2, tall);
+  }
+  if (hit.part) {
+    const a = (hit.part[0] / hit.duration) * w, b = (hit.part[1] / hit.duration) * w;
+    g.globalAlpha = 0.3; g.fillStyle = hue; g.fillRect(a, 0, Math.max(b - a, 2), h);
+    g.globalAlpha = 1; g.fillRect(a, 0, 1.5, h); g.fillRect(Math.max(a, b - 1.5), 0, 1.5, h);
+  }
+  if (hit.marker != null) {
+    const x = Math.min(w - 2, (hit.marker / hit.duration) * w);
+    g.globalAlpha = 0.3; g.fillStyle = hue; g.fillRect(x, 0, w - x, h);   // what new sound replaces
+    g.globalAlpha = 1; g.fillRect(x, 0, 2, h);
   }
   if (current && current.id === hit.id) {
     g.globalAlpha = 1; g.fillStyle = tape;
