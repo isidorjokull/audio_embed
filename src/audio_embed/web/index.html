@@ -190,6 +190,9 @@
   .gen .plain { flex: none; font-size: 13px; }
   .gen-more { display: grid; gap: 10px; }
   .gen-more[hidden] { display: none; }
+  .gen .filter[hidden] { display: none; }
+  .gen-hint { color: var(--dim); font-size: 13px; }
+  .gen-hint:empty { display: none; }
   .gen-go { display: flex; gap: 14px; align-items: center; margin-top: 2px; }
   .gen-go button[type="submit"] { flex: none; white-space: nowrap; padding: 7px 18px; background: var(--accent); color: var(--on-accent); border: 0; border-radius: 5px; font-weight: 600; box-shadow: inset 0 -2px 0 rgba(0, 0, 0, .14), 0 1px 2px rgba(0, 0, 0, .5); }
   .gen-go button[type="submit"]:hover { background: var(--accent-lit); }
@@ -313,7 +316,8 @@ let failed = false;     // the current file could not be played even after conve
 const peaks = new Map();
 let canGenerate = false; // Stable Audio 3 has been set up, so files can be generated from
 // What the generate panel is set to. Kept while the page is open, so the next file starts from the same settings.
-const gen = { prompt: '', avoid: '', distance: 'medium', more: false, count: 4, seconds: '', textSeconds: 10, model: 'medium', strength: 1 };
+const gen = { prompt: '', avoid: '', distance: 'medium', more: false, count: 4, seconds: '', textSeconds: 10, model: 'medium', strength: 1,
+  make: 'variations', join: 'medium', add: 30, span: null, marker: null, of: null };
 
 function el(tag, props = {}, ...children) {
   const node = Object.assign(document.createElement(tag), props);
@@ -739,6 +743,11 @@ const CLIP_LENGTHS = [['', 'As the sample'], [10, '10 s'], [30, '30 s'], [60, '1
 const TEXT_LENGTHS = CLIP_LENGTHS.slice(1);   // with no sample, a length has to be picked
 const GEN_MODELS = { medium: 'Medium', sfx: 'Small, sound effects', music: 'Small, music' };
 const STRENGTHS = [[1, 'Normal'], [3, 'Strong'], [5, 'Very strong']];
+const MAKES = [['variations', 'Variations'], ['part', 'Redo a part'], ['loop', 'Loop'], ['longer', 'Longer']];
+const JOINS = [['short', 'Short'], ['medium', 'Medium'], ['long', 'Long']];
+const ADDS = [[10, '10 s'], [30, '30 s'], [60, '1 min']];
+// What a clip's row is called by what was made.
+const MADE = { part: 'Redone', loop: 'Loop', longer: 'Longer' };
 const SAMPLE_LONGEST = 60;   // a clip is as long as its sample up to this, unless a length is picked
 
 // The part of the sample the clips are made from: all of it, or a stretch from where it matched.
@@ -766,9 +775,10 @@ function genText(key, label, placeholder) {
 // A clip that has not been kept is a row like any other, played from the clip cache.
 // `number` counts every clip in the view, across runs. A clip made from text is not a variation of anything.
 const clipHit = (clip, number) => ({
-  id: `clip-${clip.id}`, clip: clip.id, kept: clip.kept, name: `${clip.distance ? 'Variation' : 'Clip'} ${number}`, folder: '',
-  near: [DISTANCES.find(([value]) => value === clip.distance)?.[1].toLowerCase(), clip.prompt].filter(Boolean).join(' · '),
-  duration: clip.seconds, window: clip.seconds, start: 0, figure: '', audio: 'original',
+  id: `clip-${clip.id}`, clip: clip.id, kept: clip.kept, folder: '',
+  name: `${MADE[clip.make] || (clip.distance ? 'Variation' : 'Clip')} ${number}`,
+  near: [MADE[clip.make]?.toLowerCase() || DISTANCES.find(([value]) => value === clip.distance)?.[1].toLowerCase(), clip.prompt].filter(Boolean).join(' · '),
+  duration: clip.seconds, window: clip.seconds, start: 0, figure: '', audio: 'original', loops: clip.make === 'loop',
   src: `/generated/${clip.id}`, peaksUrl: `/api/generated/${clip.id}/peaks`,
 });
 
@@ -792,6 +802,9 @@ function keepClipButton(hit) {
   return button;
 }
 
+// Marking a part or a marker on the sample's waveform.
+function markOn(item) {}
+
 function showGenerate() {
   const mine = ++ticket;
   const fromText = query.id == null;   // made from the prompt alone, with no sample
@@ -804,16 +817,29 @@ function showGenerate() {
     note.remove();
     if (!body.models.includes(gen.model)) gen.model = body.models[0];
 
+    // The clip the panel works from in place of the file, if one was asked for.
+    const working = body.working_from;
+    const base = working ? clipHit(working, working.n) : body.source;
+    const noSample = fromText && !working;
+    const of = working ? working.id : query.id;
+    if (gen.of !== of) { gen.of = of; gen.span = null; gen.marker = null; }   // a part belongs to one sample
+    if (noSample) gen.make = 'variations';
+
     // The sample itself, with the passage the clips will be made from marked on it.
     const sample = el('ol', { className: 'hits' });
     const showSample = () => {
-      if (fromText) return;
-      const [from, seconds] = genPassage(body.source.duration, query.start || 0);
-      const item = row(listed({ ...body.source }, { start: from, window: seconds, at: 'uses from' }), 1, null);
+      if (noSample) return;
+      const whole = gen.make === 'part' || gen.make === 'longer';   // these choose their own passage
+      const [from, seconds] = whole ? [0, base.duration] : genPassage(base.duration, working ? 0 : query.start || 0);
+      const item = row(listed({ ...base }, {
+        start: from, window: seconds, at: 'uses from',
+        part: gen.make === 'part' ? gen.span : null,
+        marker: gen.make === 'longer' ? gen.marker ?? base.duration : null,
+      }), 1, null);
       sample.replaceChildren(item);
       waveforms([item]);
+      markOn(item);
     };
-    showSample();
 
     const clips = el('ol', { className: 'hits' });
     const says = el('span', { className: 'gen-says', role: 'status' });
@@ -821,23 +847,42 @@ function showGenerate() {
     const label = () => { go.textContent = `Generate ${gen.count}`; };
     label();
     const model = body.models.length > 1 ? [genChoice('Model', body.models.map((m) => [m, GEN_MODELS[m] || m]), 'model')] : [];
+    const far = genChoice('How far', DISTANCES, 'distance');
+    far.title = 'How far the clips may drift from the sample.';
+    const join = genChoice('Join', JOINS, 'join');
+    join.title = 'How much of the end and the start is made anew so that they meet: 1, 2 or 4 seconds.';
+    const adds = genChoice('Add', ADDS, 'add');
+    const lengths = genChoice('Length', CLIP_LENGTHS, 'seconds', showSample);
+    const hint = el('span', { className: 'gen-hint' });
+    // Each choice of what to make has its own rows; the rest are put away.
+    const fit = () => {
+      far.hidden = gen.make !== 'variations';
+      join.hidden = gen.make !== 'loop';
+      adds.hidden = gen.make !== 'longer';
+      lengths.hidden = gen.make === 'part' || gen.make === 'longer';
+      hint.textContent = {
+        part: 'Drag on the waveform above to mark the part to redo.',
+        longer: 'New sound follows on from the end. Click the waveform above to start it earlier, before a fade.',
+      }[gen.make] || '';
+      showSample();
+    };
+    const makes = genChoice('Make', MAKES, 'make', () => { fit(); keepAddress(); });
     // From text, the length and the model decide the most, so they are not folded away.
     const more = el('div', { className: 'gen-more', hidden: !gen.more },
       genText('avoid', 'Avoid', 'What to steer away from, such as: drums, vocals'),
       genChoice('Count', COUNTS, 'count', label),
-      ...(fromText ? [] : [genChoice('Length', CLIP_LENGTHS, 'seconds', showSample), ...model]),
+      ...(noSample ? [] : [lengths, ...model]),
       genChoice('Strength', STRENGTHS, 'strength'));
     more.querySelector('[data-row="Strength"]').title = 'How hard the prompt pulls. Anything to avoid needs more than Normal, so it is raised to Strong if left there.';
     const fold = el('button', { className: 'plain', type: 'button', ariaExpanded: String(gen.more) }, gen.more ? 'Less' : 'More');
     fold.onclick = () => { gen.more = !gen.more; more.hidden = !gen.more; fold.ariaExpanded = String(gen.more); fold.textContent = gen.more ? 'Less' : 'More'; };
     const panel = el('form', { className: 'gen' },
-      ...(fromText
+      ...(noSample
         ? [genText('prompt', 'Prompt', 'The sound to make, such as: a dark, ominous low drone'), genChoice('Length', TEXT_LENGTHS, 'textSeconds'), ...model]
-        : [genText('prompt', 'Prompt', 'What to add or change, such as: slow metallic shimmer'), genChoice('How far', DISTANCES, 'distance')]),
+        : [makes, genText('prompt', 'Prompt', 'What to add or change, such as: slow metallic shimmer'), far, join, adds, hint]),
       more,
       el('div', { className: 'gen-go' }, go, fold, says));
-    const far = panel.querySelector('[data-row="How far"]');
-    if (far) far.title = 'How far the clips may drift from the sample.';
+    fit();
 
     const shown = new Set();
     const add = (clip) => {
@@ -852,7 +897,7 @@ function showGenerate() {
     const follow = (run) => fetch(`/api/generate/${run}`).then(async (r) => ({ ok: r.ok, body: await r.json() })).then(({ ok, body: progress }) => {
       if (mine !== ticket) return;
       if (!ok) { says.textContent = progress.error; go.disabled = false; return; }
-      progress.clips.filter((clip) => clip.state === 'done').forEach((clip) => add({ ...clip, prompt: gen.sent.prompt, distance: gen.sent.distance }));
+      progress.clips.filter((clip) => clip.state === 'done').forEach((clip) => add({ ...clip, prompt: gen.sent.prompt, distance: gen.sent.distance, make: gen.sent.make }));
       const made = progress.clips.filter((clip) => clip.state === 'done').length;
       const failed = progress.clips.filter((clip) => clip.state === 'failed');
       if (!progress.done) {
@@ -868,12 +913,15 @@ function showGenerate() {
       e.preventDefault();
       go.disabled = true;
       says.textContent = 'Starting';
-      gen.sent = { prompt: gen.prompt.trim().replace(/\s+/g, ' '), distance: fromText ? null : gen.distance };
+      const varied = !noSample && gen.make === 'variations';
+      gen.sent = { prompt: gen.prompt.trim().replace(/\s+/g, ' '), distance: varied ? gen.distance : null, make: gen.make };
       fetch('/api/generate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(fromText
+        body: JSON.stringify(noSample
           ? { prompt: gen.prompt, avoid: gen.avoid, count: gen.count, seconds: gen.textSeconds, model: gen.model, strength: gen.strength }
-          : { id: query.id, start: query.start || 0, prompt: gen.prompt, avoid: gen.avoid, distance: gen.distance,
+          : { ...(working ? { clip: working.id } : { id: query.id, start: query.start || 0 }),
+            make: gen.make, span: gen.make === 'part' ? gen.span : null, marker: gen.make === 'longer' ? gen.marker : null,
+            join: gen.join, add: gen.add, prompt: gen.prompt, avoid: gen.avoid, distance: gen.distance,
             count: gen.count, seconds: gen.seconds || null, model: gen.model, strength: gen.strength }),
       }).then(async (r) => ({ ok: r.ok, body: await r.json() })).then(({ ok, body: started }) => {
         if (mine !== ticket) return;
@@ -882,8 +930,8 @@ function showGenerate() {
       }).catch(() => { if (mine === ticket) { says.textContent = 'The search server is not responding.'; go.disabled = false; } });
     };
 
-    if (fromText) column.append(panel, clips);
-    else if (body.source.audio === 'none') {
+    if (noSample) column.append(panel, clips);
+    else if (!working && body.source.audio === 'none') {
       column.append(sample, el('p', { className: 'note wide' }, 'The original is online-only and its render is not within reach, so there is nothing to generate from. Connect the render drive, or download the file.'));
       return;
     }
@@ -1150,6 +1198,7 @@ new ResizeObserver(redrawAll).observe(document.body);
 // ---------- playing
 
 function load(hit, at) {
+  player.loop = !!hit.loops;   // a loop plays on repeat, so its join is heard
   const same = current && current.id === hit.id;
   const previous = current;
   current = hit;
