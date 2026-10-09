@@ -436,3 +436,56 @@ def test_a_request_says_what_to_make_and_where():
 def test_a_request_for_a_part_a_loop_or_more_is_checked(body, says):
     with pytest.raises(ValueError, match=says):
         generate.ask_from(body)
+
+
+def test_the_passage_for_a_part_is_placed_around_it():
+    short = generate.plan(10.0, 0.0, Ask(make="part", span=(3.0, 5.0)))
+    assert (short.start_s, short.seconds, short.whole, short.part, short.out_s) == (0.0, 10.0, True, (3.0, 5.0), 10.0)
+    long = generate.plan(600.0, 0.0, Ask(make="part", span=(300.0, 310.0)))
+    assert (long.start_s, long.seconds, long.whole) == (275.0, 60.0, False)   # as much before as after
+    assert long.part == (25.0, 35.0)
+    at_the_end = generate.plan(600.0, 0.0, Ask(make="part", span=(595.0, 600.0)))
+    assert (at_the_end.start_s, at_the_end.part) == (540.0, (55.0, 60.0))     # pulled back to fit
+    past = generate.plan(10.0, 0.0, Ask(make="part", span=(8.0, 99.0)))
+    assert past.part == (8.0, 10.0)                                            # never past the end
+
+
+@pytest.mark.parametrize("duration, span, says", [
+    (10.0, (0.0, 9.5), "Mark a shorter part"),        # under a second would stay
+    (600.0, (100.0, 160.0), "Mark a shorter part"),   # as long as the passage itself
+    (10.0, (9.9, 12.0), "past the end"),
+    (10.0, (20.0, 22.0), "past the end"),
+])
+def test_a_part_that_leaves_nothing_to_match_is_refused(duration, span, says):
+    with pytest.raises(ValueError, match=says):
+        generate.plan(duration, 0.0, Ask(make="part", span=span))
+
+
+def test_a_loop_is_the_passage_variations_would_use_with_a_join_that_fits():
+    loop = generate.plan(600.0, 200.0, Ask(make="loop", join="long", seconds=20.0))
+    assert (loop.start_s, loop.seconds, loop.join_s, loop.part, loop.out_s) == (200.0, 20.0, 4.0, None, 20.0)
+    tight = generate.plan(2.0, 0.0, Ask(make="loop", join="long"))
+    assert tight.join_s == 1.0   # never more than half the clip
+    with pytest.raises(ValueError, match="at least 2 seconds"):
+        generate.plan(1.5, 0.0, Ask(make="loop"))
+
+
+def test_longer_follows_on_from_the_marker_or_the_end():
+    from_the_end = generate.plan(8.0, 0.0, Ask(make="longer", add=10.0))
+    assert (from_the_end.start_s, from_the_end.seconds, from_the_end.whole) == (0.0, 8.0, True)
+    assert (from_the_end.part, from_the_end.out_s) == ((8.0, 18.0), 18.0)
+    pulled_back = generate.plan(8.0, 0.0, Ask(make="longer", add=10.0, marker=6.0))
+    assert (pulled_back.seconds, pulled_back.whole, pulled_back.part) == (6.0, False, (6.0, 16.0))
+    long = generate.plan(600.0, 0.0, Ask(make="longer", add=30.0))
+    assert (long.start_s, long.seconds, long.out_s) == (540.0, 60.0, 90.0)     # the last minute of it
+    most = generate.plan(600.0, 0.0, Ask(make="longer", add=100.0))
+    assert (most.seconds, most.out_s) == (20.0, 120.0)                         # never more than two minutes in all
+    beyond = generate.plan(8.0, 0.0, Ask(make="longer", add=10.0, marker=500.0))
+    assert beyond.seconds == 8.0                                               # a marker past the end is the end
+    with pytest.raises(ValueError, match="less than 1 second before the marker"):
+        generate.plan(8.0, 0.0, Ask(make="longer", marker=0.5))
+
+
+def test_variations_are_planned_as_before():
+    plain = generate.plan(600.0, 200.0, Ask())
+    assert (plain.start_s, plain.seconds, plain.whole, plain.part, plain.join_s, plain.out_s) == (200.0, 60.0, False, None, 0.0, 60.0)

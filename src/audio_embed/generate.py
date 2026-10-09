@@ -142,6 +142,44 @@ def passage(duration: float, matched_at: float, asked: float | None = None) -> t
     return float(start), float(seconds)
 
 
+@dataclass(frozen=True)
+class Plan:
+    """The passage of a sample a run is made from, and what is made anew in it."""
+
+    start_s: float
+    seconds: float
+    whole: bool  # the passage is the whole sample
+    part: tuple[float, float] | None = None  # the new stretch, in seconds from the start of the passage
+    join_s: float = 0.0  # a loop's join
+    out_s: float = 0.0  # how long the clip will be
+
+
+def plan(duration: float, matched_at: float, ask: Ask) -> Plan:
+    """What a run does to a sample. A ValueError says, in words for the page, why it cannot."""
+    if ask.make == "part":
+        a, b = ask.span[0], min(ask.span[1], duration)
+        if b - a < SHORTEST_PART_S:
+            raise ValueError("The part lies past the end of the sample.")
+        seconds = min(duration, LONGEST_S)
+        if b - a > seconds - MIN_KEPT_S:
+            raise ValueError(f"Mark a shorter part: at least {MIN_KEPT_S:g} second of the passage has to stay as it is.")
+        start = min(max(0.0, (a + b) / 2 - seconds / 2), duration - seconds)
+        return Plan(start, seconds, seconds >= duration - 0.05, (a - start, b - start), 0.0, seconds)
+    if ask.make == "longer":
+        marker = duration if ask.marker is None else min(ask.marker, duration)
+        if marker < MIN_KEPT_S:
+            raise ValueError(f"There is less than {MIN_KEPT_S:g} second before the marker to follow on from.")
+        context = min(marker, LONGEST_S, LONGEST_ASKED_S - ask.add)
+        return Plan(marker - context, context, context >= duration - 0.05, (context, context + ask.add), 0.0, context + ask.add)
+    start, seconds = passage(duration, matched_at, ask.seconds)
+    whole = seconds >= duration - 0.05
+    if ask.make == "loop":
+        if seconds < MIN_LOOP_S:
+            raise ValueError(f"A loop needs at least {MIN_LOOP_S:g} seconds of sound.")
+        return Plan(start, seconds, whole, None, min(JOINS[ask.join], seconds / 2), seconds)
+    return Plan(start, seconds, whole, None, 0.0, seconds)
+
+
 def cut(source: Path, start: float, seconds: float, out: Path) -> None:
     """Write one passage of a file as the 44.1 kHz 16-bit stereo WAV Stable Audio 3 reads, without its tags."""
     channels = audio.channel_count(source)
