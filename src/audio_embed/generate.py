@@ -347,27 +347,29 @@ class Generator:
         return [model for model in MODELS if self.problem(model) is None]
 
     def start(self, source: Path, key: str, name: str, duration: float, start_s: float, ask: Ask) -> str:
-        """Queue a run of `ask.count` clips and give its id.
+        """Queue a run of `ask.count` clips and give its id. A ValueError says why the run cannot be made.
 
         `source` is the file to read, `key` the library path the clips belong to
         (they differ when an online-only file is read from its render) and `name`
         the sample's name without its suffix.
         """
-        start, seconds = passage(duration, start_s, ask.seconds)
-        return self._queue_run(Path(source), key, name, start, seconds, seconds >= duration - 0.05, ask)
+        return self._queue_run(Path(source), key, name, plan(duration, start_s, ask), ask)
 
     def start_from_text(self, ask: Ask) -> str:
         """Queue a run of clips made from the prompt alone, with no sample, and give its id."""
+        if ask.make != "variations":
+            raise ValueError("Only whole new clips can be made from text alone. Work from a clip to change it.")
         if not ask.prompt:
             raise ValueError("Type what to generate first.")
-        return self._queue_run(None, FROM_TEXT, "", 0.0, ask.seconds or TEXT_SECONDS, True, ask)
+        seconds = ask.seconds or TEXT_SECONDS
+        return self._queue_run(None, FROM_TEXT, "", Plan(0.0, seconds, True, None, 0.0, seconds), ask)
 
-    def _queue_run(self, source: Path | None, key: str, name: str, start: float, seconds: float, whole: bool, ask: Ask) -> str:
+    def _queue_run(self, source: Path | None, key: str, name: str, shape: Plan, ask: Ask, parent: str | None = None) -> str:
         run = {
             "id": secrets.token_hex(8), "source": source, "key": key, "name": name,
-            "start_s": start, "seconds": seconds, "whole": whole, "ask": ask, "done": False,
+            "plan": shape, "ask": ask, "parent": parent, "done": False,
             "clips": [
-                {"id": secrets.token_hex(8), "n": n, "state": "waiting", "seconds": seconds, "error": None}
+                {"id": secrets.token_hex(8), "n": n, "state": "waiting", "seconds": shape.out_s, "error": None}
                 for n in range(1, ask.count + 1)
             ],
         }
@@ -398,34 +400,54 @@ class Generator:
 
     def _make(self, run: dict) -> None:
         ask: Ask = run["ask"]
+        shape: Plan = run["plan"]
         self.cache.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory() as scratch:
-            reference = None
+            reference, given, part, by = None, None, None, 0
             if run["source"] is not None:
                 reference = Path(scratch) / "reference.wav"
-                cut(run["source"], run["start_s"], run["seconds"], reference)
+                cut(run["source"], shape.start_s, shape.seconds, reference)
+                if ask.make != "variations":
+                    # Stable Audio 3 is given the passage as it will be joined into: trimmed to steps, a loop turned.
+                    given, start, end, total, by = lay_out(ask.make, splice.read(reference), shape)
+                    splice.write(reference, given)
+                    part = (start, end, total)
             for clip in run["clips"]:
                 clip["state"] = "making"
                 seed = secrets.randbelow(2**31)
                 out = Path(scratch) / f"{clip['id']}.wav"
                 result = self._run(
-                    command(self.sa3, ask, reference, run["seconds"], seed, out),
+                    command(self.sa3, ask, reference, shape.out_s, seed, out, part),
                     cwd=self.sa3, capture_output=True, text=True,
                 )
                 if result.returncode or not out.is_file():
                     said = [line for line in (result.stderr or result.stdout or "").splitlines() if line.strip()]
                     clip.update(state="failed", error=(said[-1].strip() if said else "Stable Audio 3 made no file.")[:300])
                     continue
+                length = shape.out_s
+                if part is not None:
+                    try:
+                        kept = finish(ask.make, given, splice.read(out), part[0], part[1], by)
+                    except ValueError as e:
+                        clip.update(state="failed", error=str(e)[:300])
+                        continue
+                    splice.write(out, kept)
+                    length = len(kept) / splice.SR
+                new = part is not None and ask.make != "loop"
                 story = {
                     "clip": clip["id"], "n": clip["n"], "key": run["key"], "name": run["name"],
-                    "start_s": run["start_s"], "seconds": run["seconds"], "whole": run["whole"],
+                    "start_s": shape.start_s, "seconds": shape.seconds, "whole": shape.whole, "length": length,
+                    "make": ask.make, "parent": run["parent"],
+                    "part": [round(part[0] / splice.SR, 2), round(min(part[1], len(kept)) / splice.SR, 2)] if new else None,
+                    "join": round((part[1] - part[0]) / splice.SR, 2) if ask.make == "loop" else None,
+                    "add": round((part[1] - part[0]) / splice.SR, 2) if ask.make == "longer" else None,
                     "prompt": ask.prompt, "avoid": ask.avoid, "distance": ask.distance, "strength": ask.strength,
                     "model": ask.model, "seed": seed, "made": time.time(), "kept": None,
                 }
                 # The story first, so a clip in the cache always has one.
                 self._story_file(clip["id"]).write_text(json.dumps(story, ensure_ascii=False), encoding="utf-8")
                 shutil.move(out, self.cache / f"{clip['id']}.wav")
-                clip["state"] = "done"
+                clip.update(state="done", seconds=length)
                 self._trim({c["id"] for c in run["clips"]})
 
     def _story_file(self, clip_id: str) -> Path:

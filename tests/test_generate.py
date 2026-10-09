@@ -31,7 +31,7 @@ def tags(path):
     return {key.lower(): value for key, value in json.loads(out.stdout).get("format", {}).get("tags", {}).items()}
 
 
-def stand_in(calls=None, fails=False):
+def stand_in(calls=None, fails=False, short=0):
     """Stable Audio 3 as far as this tool can tell: a program that writes --out from --init-audio."""
 
     def run(command, **how):
@@ -40,10 +40,13 @@ def stand_in(calls=None, fails=False):
         if fails:
             return SimpleNamespace(returncode=1, stdout="", stderr="Traceback\nValueError: no such model\n")
         out = command[command.index("--out") + 1]
-        if "--init-audio" in command:
+        seconds = float(command[command.index("--seconds") + 1])
+        if "--inpaint-range" in command:  # a level no sample has, as long as was asked for (or `short` samples less)
+            splice.write(out, np.full((int(round(seconds * 44100)) - short, 2), 9000, dtype="<i2"))
+        elif "--init-audio" in command:
             shutil.copy(command[command.index("--init-audio") + 1], out)
         else:  # from text alone: a clip of the asked length
-            write_wav(out, seconds=float(command[command.index("--seconds") + 1]), sr=44100, channels=2)
+            write_wav(out, seconds=seconds, sr=44100, channels=2)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     return run
@@ -554,3 +557,84 @@ def test_command_for_a_part_names_the_stretch_and_not_a_distance():
     assert cmd[cmd.index("--seconds") + 1] == "1.021677"
     assert "--init-noise-level" not in cmd
     assert cmd[-4:] == ["--seed", "7", "--out", "/tmp/out.wav"]
+
+
+def story_of(gen, clip):
+    return gen.story(clip["id"])
+
+
+def test_a_redone_part_is_the_sample_with_only_that_part_new(tmp_path):
+    calls = []
+    gen = generator(tmp_path, run=stand_in(calls))
+    source = tmp_path / "tone.wav"
+    write_wav(source, seconds=4.0, sr=44100, channels=2)
+    (clip,) = made(gen, source, Ask(count=1, make="part", span=(1.0, 2.0)), duration=4.0)
+    assert clip["state"] == "done"
+
+    command = calls[0][0]
+    start, end = splice.snap(1.0), splice.snap(2.0)
+    assert command[command.index("--inpaint-range") + 1] == f"{splice.clock(start)},{splice.clock(end)}"
+    out, original = splice.read(gen.clip(clip["id"])), splice.read(source)
+    assert len(out) == len(original)
+    assert np.all(out[start:end] == 9000)
+    assert np.array_equal(out[: start - splice.FADE], original[: start - splice.FADE])
+    assert np.array_equal(out[end + splice.FADE:], original[end + splice.FADE:])
+
+    story = story_of(gen, clip)
+    assert (story["make"], story["join"], story["add"], story["parent"]) == ("part", None, None, None)
+    assert story["part"] == [round(start / 44100, 2), round(end / 44100, 2)]
+    assert story["length"] == pytest.approx(4.0, abs=0.01) and story["seconds"] == 4.0
+
+
+def test_a_loop_is_new_at_both_ends_and_untouched_in_the_middle(tmp_path):
+    gen = generator(tmp_path)
+    source = tmp_path / "tone.wav"
+    write_wav(source, seconds=4.0, sr=44100, channels=2)
+    (clip,) = made(gen, source, Ask(count=1, make="loop", join="medium"), duration=4.0)
+    out, original = splice.read(gen.clip(clip["id"])), splice.read(source)
+    assert len(out) == len(original) // 4096 * 4096
+    assert out[0, 0] == 9000 and out[-1, 0] == 9000
+    middle = slice(len(out) // 2 - 4096, len(out) // 2 + 4096)
+    assert np.array_equal(out[middle], original[middle])
+    story = story_of(gen, clip)
+    assert (story["make"], story["part"]) == ("loop", None)
+    assert story["join"] == pytest.approx(2.0, abs=0.1)
+    assert clip["seconds"] == pytest.approx(len(out) / 44100)
+
+
+def test_a_longer_clip_is_the_sample_and_then_new_sound(tmp_path):
+    calls = []
+    gen = generator(tmp_path, run=stand_in(calls))
+    source = tmp_path / "tone.wav"
+    write_wav(source, seconds=3.0, sr=44100, channels=2)
+    (clip,) = made(gen, source, Ask(count=1, make="longer", add=2.0), duration=3.0)
+    out, original = splice.read(gen.clip(clip["id"])), splice.read(source)
+    kept = len(original) // 4096 * 4096
+    assert len(out) == kept + splice.snap(2.0)
+    assert np.array_equal(out[: kept - splice.FADE], original[: kept - splice.FADE])
+    assert np.all(out[kept:] == 9000)
+    command = calls[0][0]
+    assert command[command.index("--seconds") + 1] == splice.clock(len(out))
+    story = story_of(gen, clip)
+    assert story["make"] == "longer" and story["add"] == pytest.approx(2.0, abs=0.1)
+    assert clip["seconds"] == pytest.approx(len(out) / 44100)
+
+
+def test_a_clip_that_comes_back_too_short_fails_and_the_run_goes_on(tmp_path):
+    gen = generator(tmp_path, run=stand_in(short=30000))
+    source = tmp_path / "tone.wav"
+    write_wav(source, seconds=3.0, sr=44100, channels=2)
+    clips = made(gen, source, Ask(count=2, make="longer", add=1.0), duration=3.0)
+    assert [clip["state"] for clip in clips] == ["failed", "failed"]
+    assert clips[0]["error"] == "Stable Audio 3 returned a shorter clip than was asked for."
+    assert gen.clips_from(str(source)) == []
+
+
+def test_a_run_that_cannot_be_planned_is_refused_before_it_starts(tmp_path):
+    gen = generator(tmp_path)
+    source = tmp_path / "tone.wav"
+    write_wav(source, seconds=1.0)
+    with pytest.raises(ValueError, match="at least 2 seconds"):
+        gen.start(source, key=str(source), name="tone", duration=1.0, start_s=0.0, ask=Ask(make="loop"))
+    with pytest.raises(ValueError, match="from text alone"):
+        gen.start_from_text(Ask(prompt="rain", make="loop"))
