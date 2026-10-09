@@ -190,6 +190,14 @@ uv run audio-embed generator                                                    
 - **Generate from this** in the player (or `N`) opens the file with a small panel: a prompt for
   what to add or change, and how far the result may drift (close, medium, far). **More** adds
   what to avoid, how many clips, their length, the model and how hard the prompt pulls.
+- **Make** chooses what a run does with the sample. *Variations* is the above. *Redo a part*:
+  drag on the sample's waveform and only that part is made anew. *Loop*: the end and the start
+  are made anew so the clip repeats without a seam; Join says how much. *Longer*: new sound
+  follows on from the sample; click its waveform to start earlier than the end, before a fade.
+  In all three, everything outside the new part is the sample itself. Longer suits sustained
+  sounds (drones, ambiences, textures); after sparse events it has little to follow on from.
+- Every clip row has **Work from this**, which makes that clip the sample: loop a variation or
+  make a clip from text longer before keeping anything.
 - Clips appear under the panel as they are made, a few seconds each. From a long file they are
   made from the passage your search matched, a minute of it unless you pick another length.
 - **Generate from text**, next to the file count, makes clips from a description alone: whatever
