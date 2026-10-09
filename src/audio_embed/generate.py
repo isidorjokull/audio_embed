@@ -25,7 +25,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import audio, renders
+import numpy as np
+
+from . import audio, renders, splice
 
 MARKER = ".audio-embed-generated"
 # The cache of clips that have not been kept, next to the index.
@@ -180,6 +182,31 @@ def plan(duration: float, matched_at: float, ask: Ask) -> Plan:
     return Plan(start, seconds, whole, None, 0.0, seconds)
 
 
+def lay_out(make: str, samples: np.ndarray, shape: Plan) -> tuple[np.ndarray, int, int, int, int]:
+    """(what Stable Audio 3 is given, the start and end of the new stretch in it, the samples to ask for, how far a loop was turned)."""
+    if make == "part":
+        n = len(samples)
+        start, end = splice.snap(shape.part[0]), min(splice.snap(shape.part[1]), n)
+        if n - end < splice.STEP:
+            end = n  # reaching the end means all of it: no sliver of the old tail after the part
+        return samples, max(0, min(start, end - splice.STEP)), end, n, 0
+    whole = splice.whole_steps(samples)
+    if make == "loop":
+        steps = len(whole) // splice.STEP
+        by = steps // 2 * splice.STEP
+        join = min(max(2, round(shape.join_s * splice.SR / splice.STEP)), steps // 2)
+        start = len(whole) - by - join // 2 * splice.STEP
+        return splice.turn(whole, by), start, start + join * splice.STEP, len(whole), by
+    add = max(splice.STEP, splice.snap(shape.part[1] - shape.part[0]))
+    return whole, len(whole), len(whole) + add, len(whole) + add, 0
+
+
+def finish(make: str, given: np.ndarray, made: np.ndarray, start: int, end: int, by: int) -> np.ndarray:
+    """The clip to keep: the new stretch joined into what was given, and a loop turned back."""
+    joined = splice.join(given, made, start, end)
+    return splice.turn_back(joined, by) if make == "loop" else joined
+
+
 def cut(source: Path, start: float, seconds: float, out: Path) -> None:
     """Write one passage of a file as the 44.1 kHz 16-bit stereo WAV Stable Audio 3 reads, without its tags."""
     channels = audio.channel_count(source)
@@ -196,16 +223,27 @@ def cut(source: Path, start: float, seconds: float, out: Path) -> None:
         raise RuntimeError(f"ffmpeg failed: {result.stderr.strip()[:200]}")
 
 
-def command(sa3: Path, ask: Ask, reference: Path | None, seconds: float, seed: int, out: Path) -> list[str]:
-    """The Stable Audio 3 command line for one clip. Without a `reference` the clip is made from the prompt alone."""
+def command(sa3: Path, ask: Ask, reference: Path | None, seconds: float, seed: int, out: Path,
+            part: tuple[int, int, int] | None = None) -> list[str]:
+    """The Stable Audio 3 command line for one clip.
+
+    Without a `reference` the clip is made from the prompt alone. With a `part`
+    (start, end, samples in all) only that stretch of the reference is made anew.
+    """
     dit, decoder = MODELS[ask.model]
     cmd = [
         str(sa3 / ".venv/bin/python"), str(sa3 / "scripts/sa3_mlx.py"),
         "--prompt", ask.prompt, "--dit", dit, "--decoder", decoder,
     ]
-    if reference is not None:
-        cmd += ["--init-audio", str(reference), "--init-noise-level", str(DISTANCES[ask.distance])]
-    cmd += ["--seconds", str(round(seconds, 2)), "--seed", str(seed), "--out", str(out)]
+    if reference is not None and part is not None:
+        start, end, total = part
+        cmd += ["--init-audio", str(reference), "--inpaint-range", f"{splice.clock(start)},{splice.clock(end)}",
+                "--seconds", splice.clock(total)]
+    else:
+        if reference is not None:
+            cmd += ["--init-audio", str(reference), "--init-noise-level", str(DISTANCES[ask.distance])]
+        cmd += ["--seconds", str(round(seconds, 2))]
+    cmd += ["--seed", str(seed), "--out", str(out)]
     if ask.strength != 1.0:
         cmd += ["--cfg", str(ask.strength)]
     if ask.avoid:

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from audio_embed import generate
+from audio_embed import generate, splice
 from audio_embed.generate import Ask
 
 
@@ -489,3 +489,68 @@ def test_longer_follows_on_from_the_marker_or_the_end():
 def test_variations_are_planned_as_before():
     plain = generate.plan(600.0, 200.0, Ask())
     assert (plain.start_s, plain.seconds, plain.whole, plain.part, plain.join_s, plain.out_s) == (200.0, 60.0, False, None, 0.0, 60.0)
+
+
+def level(n, value=100):
+    return np.full((n, 2), value, dtype="<i2")
+
+
+def test_a_part_is_laid_out_on_steps_inside_the_passage():
+    samples = level(10 * 44100)
+    given, start, end, total, by = generate.lay_out("part", samples, generate.Plan(0.0, 10.0, True, (3.0, 5.0), 0.0, 10.0))
+    assert given is samples and by == 0 and total == len(samples)
+    assert (start, end) == (splice.snap(3.0), splice.snap(5.0))
+    assert start % splice.STEP == 0 and end % splice.STEP == 0
+
+
+def test_a_part_that_reaches_the_end_of_a_one_shot_takes_its_whole_tail():
+    samples = level(int(3.2 * 44100))   # not a whole number of steps
+    _, start, end, total, _ = generate.lay_out("part", samples, generate.Plan(0.0, 3.2, True, (2.5, 3.2), 0.0, 3.2))
+    assert end == total == len(samples)   # no sliver of the old tail is left after the part
+    made = level(len(samples), 9000)
+    out = generate.finish("part", samples, made, start, end, 0)
+    assert len(out) == len(samples) and np.array_equal(out[start:], made[start:])
+
+
+def test_a_loop_is_turned_so_its_ends_meet_inside_the_join():
+    samples = np.repeat(np.arange(60 * 4096 + 500, dtype="<i4")[:, None] % 30000, 2, axis=1).astype("<i2")
+    given, start, end, total, by = generate.lay_out("loop", samples, generate.Plan(0.0, 5.58, True, None, 2.0, 5.58))
+    assert total == len(given) == 60 * 4096      # trimmed to whole steps
+    assert by == 30 * 4096
+    seam = total - by                              # where the old end meets the old start
+    assert start < seam < end and (end - start) == 22 * 4096   # two seconds is 21.5 steps
+    assert given[seam - 1].tolist() == samples[total - 1].tolist() and given[seam].tolist() == samples[0].tolist()
+
+    made = level(total, 9000)
+    out = generate.finish("loop", given, made, start, end, by)
+    assert len(out) == total
+    # Turned back: the join is at the two ends, and the middle is the sample as it was.
+    assert out[0, 0] == 9000 and out[-1, 0] == 9000
+    middle = slice(by - 2 * 4096, by + 2 * 4096)
+    assert np.array_equal(out[middle], samples[:total][middle])
+
+
+def test_a_join_never_takes_more_than_half_a_short_loop():
+    samples = level(22 * 4096)   # about two seconds
+    _, start, end, total, _ = generate.lay_out("loop", samples, generate.Plan(0.0, 2.04, True, None, 4.0, 2.04))
+    assert end - start == 11 * 4096 and 0 < start and end < total
+
+
+def test_longer_asks_for_the_passage_and_what_follows_it():
+    samples = level(8 * 44100)
+    given, start, end, total, by = generate.lay_out("longer", samples, generate.Plan(0.0, 8.0, True, (8.0, 18.0), 0.0, 18.0))
+    assert len(given) == len(samples) // 4096 * 4096 and by == 0
+    assert start == len(given) and end == total == len(given) + splice.snap(10.0)
+    out = generate.finish("longer", given, level(total, 9000), start, end, by)
+    assert len(out) == total and out[-1, 0] == 9000 and out[0, 0] == 100
+
+
+def test_command_for_a_part_names_the_stretch_and_not_a_distance():
+    sa3 = Path("/sa3")
+    cmd = generate.command(sa3, Ask(prompt="bells", make="part"), Path("/tmp/ref.wav"), 10.0, 7, Path("/tmp/out.wav"),
+                           part=(12288, 20480, 45056))
+    assert cmd[cmd.index("--init-audio") + 1] == "/tmp/ref.wav"
+    assert cmd[cmd.index("--inpaint-range") + 1] == "0.278638,0.464398"
+    assert cmd[cmd.index("--seconds") + 1] == "1.021677"
+    assert "--init-noise-level" not in cmd
+    assert cmd[-4:] == ["--seed", "7", "--out", "/tmp/out.wav"]
