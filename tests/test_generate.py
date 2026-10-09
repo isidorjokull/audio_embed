@@ -672,11 +672,29 @@ BASE = {"name": "Pad 04", "start_s": 0.0, "seconds": 20.0, "whole": True, "promp
 
 def test_description_says_what_was_made_anew():
     assert generate.describe({**BASE, "make": "part", "part": [12.0, 15.0], "prompt": "bells"}) == (
-        'Generated from "Pad 04". 0:12 to 0:15 regenerated. Prompt: bells. Model: Stable Audio 3 medium. Seed: 7.')
+        'Generated from "Pad 04". 0:12.0 to 0:15.0 regenerated. Prompt: bells. Model: Stable Audio 3 medium. Seed: 7.')
     assert generate.describe({**BASE, "make": "loop", "join": 2.0}) == (
         'Generated from "Pad 04". Made to loop (2 s join). Model: Stable Audio 3 medium. Seed: 7.')
     assert generate.describe({**BASE, "make": "longer", "part": [20.0, 50.0], "add": 30.0}) == (
         'Generated from "Pad 04". Continued for 30 s from 0:20. Model: Stable Audio 3 medium. Seed: 7.')
+
+
+def test_description_tells_a_part_to_a_tenth_of_a_second():
+    # Whole seconds said "0:00 to 0:00" of a part of a one-shot.
+    told = generate.describe({**BASE, "seconds": 0.9, "make": "part", "part": [0.21, 0.58]})
+    assert told.startswith('Generated from "Pad 04". 0:00.2 to 0:00.6 regenerated.')
+    told = generate.describe({**BASE, "seconds": 90.0, "make": "part", "part": [59.97, 75.5]})
+    assert told.startswith('Generated from "Pad 04". 1:00.0 to 1:15.5 regenerated.')
+
+
+def test_description_gives_a_join_and_an_added_length_in_round_figures():
+    # Both are whole steps of Stable Audio 3, so a story holds 3.99 for a join of 4 seconds and 59.91 for a minute.
+    assert "Made to loop (4 s join)." in generate.describe({**BASE, "make": "loop", "join": 3.99})
+    assert "Made to loop (2 s join)." in generate.describe({**BASE, "make": "loop", "join": 2.04})
+    assert "Made to loop (0.7 s join)." in generate.describe({**BASE, "seconds": 1.5, "make": "loop", "join": 0.74})
+    assert "Continued for 60 s from 0:20." in generate.describe({**BASE, "make": "longer", "part": [20.0, 79.91], "add": 59.91})
+    assert "Continued for 100 s from 0:20." in generate.describe({**BASE, "make": "longer", "part": [20.0, 119.94], "add": 99.94})
+    assert "Continued for 1.5 s from 0:20." in generate.describe({**BASE, "make": "longer", "part": [20.0, 21.49], "add": 1.49})
 
 
 def test_description_tells_the_whole_chain():

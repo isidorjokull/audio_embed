@@ -92,8 +92,10 @@ tool and the model agree on where the part is.
     file (or under text) as the clip they came from.
   - The story of a clip gains `make`, the part in clip time, `join`, `add`, and the
     description of the clip it was made from, if any. `describe` tells the whole chain, such
-    as: `Generated from "Pad 04". Then 0:12 to 0:15 regenerated. Then made to loop (2 s
-    join).` A story without `make` is a variation, so clips already in the cache still read.
+    as: `Generated from "Pad 04". Then 0:12.0 to 0:15.0 regenerated. Then made to loop (2 s
+    join).` A part is told to a tenth of a second, and a join and an added length in round
+    figures (the story holds them as whole steps: 3.99 for 4 s). A story without `make` is a
+    variation, so clips already in the cache still read.
 - `server.py`: `POST /api/generate` also takes `make`, `span`, `join`, `add` and `clip` (a
   clip id, checked as it is everywhere else). `GET /api/generated` takes `clip` too and then
   describes that clip as the sample. A clip's JSON says what was made, for its row.

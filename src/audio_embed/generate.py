@@ -283,14 +283,23 @@ def describe(made: dict) -> str:
     def clock(s):
         return f"{int(s // 60)}:{int(s % 60):02d}"
 
+    def tenths(s):
+        """A time inside a clip: a part of a one-shot starts and ends within one second."""
+        t = round(s * 10)
+        return f"{t // 600}:{t % 600 / 10:04.1f}"
+
+    def about(s):
+        """A length as it was asked for: a join and an added stretch are whole steps, so 4 s is kept as 3.99."""
+        return f"{round(s, 1) if s < 10 else round(s):g} s"
+
     make, parent, part = made.get("make", "variations"), made.get("parent"), made.get("part")
     from_text = made.get("key") == FROM_TEXT
     if make == "part":
-        step = f"{clock(part[0])} to {clock(part[1])} regenerated."
+        step = f"{tenths(part[0])} to {tenths(part[1])} regenerated."
     elif make == "loop":
-        step = f"made to loop ({made['join']:g} s join)."
+        step = f"made to loop ({about(made['join'])} join)."
     elif make == "longer":
-        step = f"continued for {made['add']:g} s from {clock(part[0])}."
+        step = f"continued for {about(made['add'])} from {clock(part[0])}."
     else:
         step = f"a variation of it, distance {made['distance']}." if parent else ""
     if parent:
