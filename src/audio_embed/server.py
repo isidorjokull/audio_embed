@@ -24,6 +24,7 @@ from starlette.routing import Route
 from . import audio, classify, duplicates, facets, generate, labels, models, renders, search
 from .cli import LOCATIONS, common_root, index_folder, load_embedder, render_files
 from .feedback import Feedback
+from .hidden import Hidden
 from .outlines import Outlines, beside
 from .saved import Collections, Moods, clean_name
 from .store import Matrix, Store
@@ -47,6 +48,8 @@ STEER_WEIGHT = 2.0
 BORROW_FLOOR = {"clap": 0.6, "gemma": 0.8}
 # The duplicate finder shows the sets that would free the most space.
 DUPLICATE_SETS_SHOWN = 200
+# How many rows the lists of hidden files and of likely songs show at most.
+HIDDEN_SHOWN = 300
 # How many stored waveform outlines one request may ask for.
 OUTLINES_PER_REQUEST = 60
 BROWSER_PLAYABLE = {
@@ -66,6 +69,7 @@ class Library:
         self.cache.mkdir(parents=True, exist_ok=True)
         self.outlines = Outlines(beside(db_path))
         self.renders = renders.beside(db_path)
+        self.hidden = Hidden(db_path.parent / "hidden.json")
         self._matrices: dict[str, Matrix] = {}
         self._loaded_mtime = None
         self._loaded_at = 0.0
@@ -75,6 +79,7 @@ class Library:
         self._vectors = {}  # id(matrix) -> (matrix, one vector per file, path -> position)
         self._roots = {}  # id(matrix) -> (matrix, the folder all its files share)
         self._duplicates = {}  # id(matrix) -> (matrix, sets of identical files)
+        self._left_out = {}  # id(matrix) -> (matrix, version of the hidden list, hidden files, likely songs)
         self._digests = {}  # content hashes, kept across reloads of the index
         self._embedders = {}
         self._text_vectors = {}
@@ -97,7 +102,7 @@ class Library:
                 self._matrices = {n: m for n, m in self._matrices.items() if m.paths}
                 self._loaded_mtime = mtime
                 self._loaded_at = time.monotonic()
-                self._facets, self._vectors, self._duplicates, self._roots = {}, {}, {}, {}
+                self._facets, self._vectors, self._duplicates, self._roots, self._left_out = {}, {}, {}, {}, {}
             return self._matrices
 
     def widest(self) -> tuple[str, Matrix] | None:
@@ -130,6 +135,18 @@ class Library:
             cached = (matrix, duplicates.groups(matrix.paths, self._digests))
             self._duplicates[id(matrix)] = cached
         return cached[1]
+
+    def left_out(self, matrix: Matrix) -> tuple[np.ndarray, list[int]]:
+        """(which files of a matrix are hidden, the positions of the ones that look like songs and are not).
+
+        Worked out again only when the index or the list of hidden files has changed.
+        """
+        cached = self._left_out.get(id(matrix))
+        if cached is None or cached[0] is not matrix or cached[1] != self.hidden.version:
+            version = self.hidden.version
+            cached = (matrix, version, self.hidden.mask(matrix.paths), self.hidden.suggested(matrix.paths, matrix.durations))
+            self._left_out[id(matrix)] = cached
+        return cached[2], cached[3]
 
     def ready(self, name: str) -> bool:
         return name in self._embedders
@@ -323,6 +340,7 @@ def create_app(db_path: Path) -> Starlette:
     collections = Collections(db_path.parent / "collections")
     moods = Moods(db_path.parent / "moods.json")
     generator = generate.beside(db_path)
+    hidden = library.hidden
 
     def matrix_for(request):
         return library.matrices().get(request.query_params.get("model", ""))
@@ -337,11 +355,11 @@ def create_app(db_path: Path) -> Starlette:
         """The sound categories of a matrix's files, and which files pass the request's filters.
 
         Filters: `min` and `max` length in seconds, and any number of `f=kind:value`
-        (a file must match one value of every kind that is given).
+        (a file must match one value of every kind that is given). A hidden file never passes.
         """
         sounds, index = library.filters(matrix)
         params = request.query_params
-        keep = np.ones(len(matrix.paths), dtype=bool)
+        keep = ~library.left_out(matrix)[0]
         if "min" in params or "max" in params:
             lengths = np.array(matrix.durations)
             keep &= (lengths >= float(params.get("min", 0))) & (lengths < float(params.get("max", "inf")))
@@ -400,6 +418,7 @@ def create_app(db_path: Path) -> Starlette:
             "filters": offered,
             "root": common_root(every_path) if every_path else "",
             "files": len(set(every_path)),
+            "hidden": hidden_counts(),
             "renders": {
                 "folder": str(library.renders.root) if library.renders.root else None,
                 "connected": library.renders.connected(),
@@ -518,6 +537,94 @@ def create_app(db_path: Path) -> Starlette:
             "spare_files": sum(len(positions) - 1 for positions, _ in found),
             "spare_bytes": sum(size * (len(positions) - 1) for positions, size in found),
         })
+
+    def hidden_counts() -> dict:
+        """How many indexed files are hidden, and how many more look like songs."""
+        widest = library.widest()
+        if widest is None:
+            return {"files": 0, "songs": 0}
+        mask, songs = library.left_out(widest[1])
+        return {"files": int(mask.sum()), "songs": len(songs)}
+
+    def hidden_files(request):
+        """What is hidden: the folders, and the files that were hidden one by one."""
+        widest = library.widest()
+        if widest is None:
+            return JSONResponse({"folders": [], "hits": [], "more": 0, "counts": hidden_counts()})
+        model, matrix = widest
+        under: dict[str, int] = {}
+        single = []
+        for i in np.flatnonzero(library.left_out(matrix)[0]):
+            folder = hidden.folder_of(matrix.paths[i])
+            if folder is None:
+                single.append(int(i))
+            else:
+                under[folder] = under.get(folder, 0) + 1
+        return JSONResponse({
+            "folders": [{"folder": f, "name": Path(f).name, "files": under.get(f, 0)} for f in hidden.folders()],
+            "hits": listed(matrix, model, single[:HIDDEN_SHOWN]),
+            "more": max(0, len(single) - HIDDEN_SHOWN),
+            "counts": hidden_counts(),
+        })
+
+    async def hidden_change(request):
+        """Hide a file ({"id": ..., "hide": true}) or the folder it is in (with "folder": true),
+        show a file again ("hide": false), or show a hidden folder again ({"show_folder": its path}).
+
+        A folder is only ever hidden as the folder of an indexed file, and showing one again
+        only takes it off the list, so no path from the page is acted on.
+        """
+        body = await request.json()
+        if "show_folder" in body:
+            hidden.show_folder(str(body["show_folder"]))
+            return JSONResponse({"counts": hidden_counts()})
+        path = library.path_of(int(body.get("id", -1)))
+        if path is None:
+            return error("That file is not in the index.", 400)
+        if not body.get("hide"):
+            hidden.show(str(path))
+        elif body.get("folder"):
+            hidden.hide_folder(str(path.parent))
+        else:
+            hidden.hide(str(path))
+        widest = library.widest()
+        beside = labels.nfc(str(path.parent)) + "/"
+        return JSONResponse({
+            "counts": hidden_counts(),
+            # The folder the file is in, so the page can offer to hide all of it.
+            "folder": {
+                "folder": str(path.parent),
+                "name": path.parent.name,
+                "files": sum(labels.nfc(p).startswith(beside) for p in widest[1].paths) if widest else 0,
+            },
+        })
+
+    def song_files(request):
+        """The files whose names and lengths say they are songs, for the user to hide or clear."""
+        widest = library.widest()
+        if widest is None:
+            return JSONResponse({"hits": [], "more": 0, "counts": hidden_counts()})
+        model, matrix = widest
+        songs = library.left_out(matrix)[1]
+        return JSONResponse({
+            "hits": listed(matrix, model, songs[:HIDDEN_SHOWN]),
+            "more": max(0, len(songs) - HIDDEN_SHOWN),
+            "counts": hidden_counts(),
+        })
+
+    async def song_change(request):
+        """Hide every likely song ({"hide_all": true}), or say that one file is not a song ({"id": ...})."""
+        body = await request.json()
+        widest = library.widest()
+        if body.get("hide_all"):
+            if widest is not None:
+                hidden.hide_all([widest[1].paths[i] for i in library.left_out(widest[1])[1]])
+            return JSONResponse({"counts": hidden_counts()})
+        path = library.path_of(int(body.get("id", -1)))
+        if path is None:
+            return error("That file is not in the index.", 400)
+        hidden.not_a_song(str(path))
+        return JSONResponse({"counts": hidden_counts()})
 
     def mood_list(request):
         return JSONResponse(moods.all())
@@ -730,6 +837,10 @@ def create_app(db_path: Path) -> Starlette:
         Route("/api/collections/{name}", collection_change, methods=["POST"]),
         Route("/api/collections/{name}/reveal", collection_reveal, methods=["POST"]),
         Route("/api/duplicates", duplicate_files),
+        Route("/api/hidden", hidden_files),
+        Route("/api/hidden", hidden_change, methods=["POST"]),
+        Route("/api/songs", song_files),
+        Route("/api/songs", song_change, methods=["POST"]),
         Route("/api/moods", mood_list),
         Route("/api/moods", mood_save, methods=["POST"]),
         Route("/api/moods/{name}", mood_remove, methods=["DELETE"]),

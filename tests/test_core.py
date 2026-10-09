@@ -1000,3 +1000,93 @@ def test_quality_of_an_online_only_file_is_the_one_stored_while_it_was_here(tmp_
     never_read = tmp_path / "never read.mp3"
     never_read.write_bytes(b"")
     assert ("quality", "lossy") in labels.read(never_read, {}, set())
+
+
+# ---------- hiding files from searches
+
+
+def test_a_hidden_file_is_left_out_and_stays_hidden(tmp_path):
+    from audio_embed.hidden import Hidden
+
+    paths = ["/lib/a.wav", "/lib/b.wav"]
+    hidden = Hidden(tmp_path / "hidden.json")
+    assert not hidden.mask(paths).any()
+    hidden.hide("/lib/b.wav")
+    assert hidden.mask(paths).tolist() == [False, True]
+    assert Hidden(tmp_path / "hidden.json").mask(paths).tolist() == [False, True]
+    hidden.show("/lib/b.wav")
+    assert not Hidden(tmp_path / "hidden.json").mask(paths).any()
+
+
+def test_a_hidden_folder_hides_everything_under_it_and_nothing_beside_it(tmp_path):
+    from audio_embed.hidden import Hidden
+
+    paths = ["/lib/Lög/a.wav", "/lib/Lög/deeper/b.wav", "/lib/Lög 2/c.wav", "/lib/d.wav"]
+    hidden = Hidden(tmp_path / "hidden.json")
+    hidden.hide_folder("/lib/Lög")
+    assert hidden.mask(paths).tolist() == [True, True, False, False]
+    assert hidden.folder_of("/lib/Lög/deeper/b.wav") == "/lib/Lög"
+    assert hidden.folder_of("/lib/d.wav") is None
+    hidden.show_folder("/lib/Lög")
+    assert not hidden.mask(paths).any()
+
+
+def test_hidden_paths_match_however_their_accents_are_written(tmp_path):
+    import unicodedata
+
+    from audio_embed.hidden import Hidden
+
+    hidden = Hidden(tmp_path / "hidden.json")
+    hidden.hide_folder(unicodedata.normalize("NFD", "/lib/Lög"))
+    hidden.hide(unicodedata.normalize("NFC", "/lib/Píanó.wav"))
+    paths = [unicodedata.normalize("NFC", "/lib/Lög/a.wav"), unicodedata.normalize("NFD", "/lib/Píanó.wav")]
+    assert hidden.mask(paths).all()
+
+
+@pytest.mark.parametrize("path", [
+    "/show/audio/Avril Lavigne - Sk8er Boi (Official Audio).mp3",
+    "/show/audio/Fleetwood mac - Dreams.mp3",
+    "/show/Downloads/01 - Elly Vilhjálms - Hvít jól.flac",
+    "/show/Bounce/Lög/MP3 to WAW/Just FriendsM2W.wav",
+    "/show/Bounce/Lög/Køp bananer 152.wav",
+    "/show/audio/Rihanna - Umbrella (Audio) ft. Jay-Z.mp3",
+])
+def test_names_that_look_like_songs(path):
+    from audio_embed.hidden import looks_like_song
+
+    assert looks_like_song(path, 200.0)
+
+
+@pytest.mark.parametrize("path", [
+    "/show/Bounce/Textures/Kór 1 - NV FOLLOW.wav",           # the user's own bounce: a dash, but not compressed
+    "/show/Textures/2 Sello stuff Skrap - ENV FOLLOW.wav",
+    "/lib/Foley/Ambiance/AMB_Nature_Forest_General_Trail_Humidity_Fog.wav",
+    "/lib/Foley/Ambiance/interior-city-apartment-53658.mp3",
+    "/lib/Úr upptökum/IPHONE/New Recording 5.mp3",
+    "/lib/packs/loops/SS_SL_138_drum_loop_bananamania.wav",
+])
+def test_names_that_do_not_look_like_songs(path):
+    from audio_embed.hidden import looks_like_song
+
+    assert not looks_like_song(path, 200.0)
+
+
+def test_a_short_file_is_never_taken_for_a_song():
+    from audio_embed.hidden import looks_like_song
+
+    assert not looks_like_song("/packs/Cutty Ranks - The Stopper.mp3", 8.0)
+
+
+def test_songs_are_suggested_until_hidden_or_cleared(tmp_path):
+    from audio_embed.hidden import Hidden
+
+    paths = ["/a/Fleetwood mac - Dreams.mp3", "/a/Robyn - Dancing On My Own.mp3", "/a/MRI - Sounds of a scan.mp3", "/a/drone.wav"]
+    durations = [250.0, 280.0, 500.0, 90.0]
+    hidden = Hidden(tmp_path / "hidden.json")
+    assert hidden.suggested(paths, durations) == [0, 1, 2]
+    hidden.hide(paths[0])
+    hidden.not_a_song(paths[2])
+    assert hidden.suggested(paths, durations) == [1]
+    # Showing a hidden file that looks like a song settles it: it is not suggested again.
+    hidden.show(paths[0])
+    assert Hidden(tmp_path / "hidden.json").suggested(paths, durations) == [1]

@@ -25,6 +25,9 @@ audition by hand.
 - **Collections.** Keep files in named collections. Each one is a plain folder of shortcuts you
   can open in Finder or add to your DAW's browser.
 - **Mood presets.** Save a description under a short name and run it with one click.
+- **Hiding.** The crossed-out eye on a result (or H) leaves that file, or its whole folder, out of
+  every search from then on. Files whose names say they are finished songs ("Artist - Title.mp3")
+  are listed for you to hide in one go. Hiding only stops a file being shown, and can be undone.
 - **Duplicate finder.** Byte-for-byte identical files, with the space they waste.
 - **Renders.** A small listening copy of every file on an external drive, so you can still
   audition files whose originals are online-only in a cloud-synced folder.
@@ -228,6 +231,7 @@ render folder if you set one up and the folder for kept variations if you name o
 | `generating/` | Variations you have not kept (up to 500 MB, oldest dropped first) | Unkept clips are gone |
 | `feedback.jsonl` | Your votes | Gone |
 | `collections/` | Your collections, as folders of shortcuts | Gone |
+| `hidden.json` | The files and folders you have hidden from searches | Gone: everything shows again |
 | `moods.json`, `locations.json`, `categories.json` | Your presets and labelling | Gone |
 | `settings.json`, `renders.db` | Where renders, Stable Audio 3 and kept variations live, and which render belongs to which file | A copy of `renders.db` is kept in the render folder |
 

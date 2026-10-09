@@ -167,6 +167,11 @@
   .votes button[aria-pressed="true"] { color: var(--accent-ink); opacity: 1; }
   .votes svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .votes button[aria-pressed="true"] svg { fill: currentColor; fill-opacity: .9; }
+  .votes .hide[aria-pressed="true"] svg { fill: none; }
+  .gone { display: flex; gap: 14px; align-items: baseline; padding: 7px 12px; margin: 0 -12px; color: var(--dim); font-size: 13px; }
+  .gone span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gone .plain { flex: none; font-size: 13px; }
+  .hits.sorting .like { visibility: visible; }
   .rank, .at, .len, .score { font-family: var(--figures); font-size: 13px; color: var(--dim); }
   .len, .score { text-align: right; }
   .at { color: var(--hue); }
@@ -260,7 +265,7 @@
   </form>
   <div class="ask-row">
     <div class="views" id="views" role="radiogroup" aria-label="Search with"></div>
-    <p class="library"><span id="library"></span><button class="plain" id="generate-text" type="button" hidden title="Make new audio from the text in the search box, with Stable Audio 3 (Shift+Enter in the search box)">Generate from text</button><button class="plain" id="find-duplicates" type="button">Find duplicates</button></p>
+    <p class="library"><span id="library"></span><button class="plain" id="generate-text" type="button" hidden title="Make new audio from the text in the search box, with Stable Audio 3 (Shift+Enter in the search box)">Generate from text</button><button class="plain" id="find-duplicates" type="button">Find duplicates</button><button class="plain" id="show-songs" type="button" hidden title="Files whose names say they are songs, to hide from searches"></button><button class="plain" id="show-hidden" type="button" hidden title="The files and folders you have hidden from searches"></button></p>
   </div>
   <div class="filters" id="filters"></div>
 </header>
@@ -292,7 +297,7 @@ const player = $('player');
 
 let models = [];        // [{name, label, files}]
 let view = 'both';      // a model name, or 'both'
-let query = null;       // {kind: 'text', text}, {kind: 'like', id, name}, {kind: 'collection', name}, {kind: 'duplicates'}, {kind: 'generate', id, name, start} or {kind: 'generate', text}
+let query = null;       // {kind: 'text', text}, {kind: 'like', id, name}, {kind: 'collection', name}, {kind: 'duplicates'}, {kind: 'hidden'}, {kind: 'songs'}, {kind: 'generate', id, name, start} or {kind: 'generate', text}
 let offered = [];       // filter groups from the server: [{kind, values: [{value, count}]}]
 let lengthMin = null;   // the shortest length shown, in seconds; null is no limit
 let lengthMax = null;   // the longest, likewise
@@ -315,6 +320,7 @@ let converted = false;  // whether the player is on a converted copy of the curr
 let failed = false;     // the current file could not be played even after converting
 const peaks = new Map();
 let canGenerate = false; // Stable Audio 3 has been set up, so files can be generated from
+let hideable = false;    // the server can hide files from searches (one started before that was added cannot)
 // What the generate panel is set to. Kept while the page is open, so the next file starts from the same settings.
 const gen = { prompt: '', avoid: '', distance: 'medium', more: false, count: 4, seconds: '', textSeconds: 10, model: 'medium', strength: 1,
   make: 'variations', join: 'medium', add: 30, span: null, marker: null, of: null, from: 0, running: null };
@@ -377,6 +383,7 @@ function keepAddress() {
   if (query && query.kind === 'like') { params.set('like', query.id); params.set('name', query.name); }
   if (query && query.kind === 'collection') params.set('collection', query.name);
   if (query && query.kind === 'duplicates') params.set('duplicates', '1');
+  if (query && (query.kind === 'hidden' || query.kind === 'songs')) params.set(query.kind, '1');
   if (query && query.kind === 'generate' && query.id == null) { params.set('generate', 'text'); if (query.text) params.set('prompt', query.text); }
   else if (query && query.kind === 'generate') { params.set('generate', query.id); params.set('name', query.name); if (query.start) params.set('at', query.start); }
   if (query && query.kind === 'generate' && query.clip) params.set('clip', query.clip);
@@ -737,6 +744,129 @@ function showDuplicates() {
   }).catch(() => { if (mine === ticket) note.textContent = 'The search server is not responding. Start it again with "uv run audio-embed serve".'; });
 }
 
+// ---------- hiding files from every search
+
+const EYE_OFF = '<svg viewBox="0 0 24 24"><path d="M3 3l18 18M10.6 5.2A9.6 9.6 0 0 1 12 5c6 0 9.5 7 9.5 7a15 15 0 0 1-2.9 3.7M6.5 6.6A15 15 0 0 0 2.5 12s3.5 7 9.5 7a9 9 0 0 0 4.3-1.1M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
+
+function showHiddenCounts(counts) {
+  if (!counts) return;
+  hideable = true;
+  $('show-songs').hidden = !counts.songs;
+  $('show-songs').textContent = `${counts.songs.toLocaleString()} look like songs`;
+  $('show-hidden').hidden = !counts.files;
+  $('show-hidden').textContent = `${counts.files.toLocaleString()} hidden`;
+  const all = document.querySelector('.hide-all');
+  if (all) all.textContent = `Hide all ${counts.songs.toLocaleString()}`;
+}
+
+function changeHidden(url, body) {
+  return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    .then(async (r) => ({ ok: r.ok, body: await r.json() }))
+    .then(({ ok, body }) => { if (!ok) throw new Error(body.error); showHiddenCounts(body.counts); return body; });
+}
+
+// A row that has been dealt with shrinks to one line. It keeps the row, so that it can come back.
+function settled(item, text, ...actions) {
+  const line = el('li', { className: 'gone' }, el('span', {}, text), ...actions);
+  line.dataset.id = item._hit.id;
+  line._was = item;
+  item.replaceWith(line);
+  return line;
+}
+
+// Turns every row of one file into a line, in each column it is in. `undo` is what Undo sends.
+function settle(hit, text, undo, more = () => []) {
+  document.querySelectorAll(`.hit[data-id="${hit.id}"]`).forEach((item) => {
+    const here = item.contains(document.activeElement) || item.classList.contains('current');
+    const back = plain('Undo', () => changeHidden('/api/hidden', undo).then(() => {
+      document.querySelectorAll(`.gone[data-id="${hit.id}"]`).forEach((line) => line.replaceWith(line._was));
+    }).catch(() => {}));
+    settled(item, text, back, ...more());
+    // The arrow keys carry on from here.
+    if (here) back.focus({ preventScroll: true });
+  });
+}
+
+function hide(hit) {
+  if (!hideable || hit.clip) return;
+  changeHidden('/api/hidden', { id: hit.id, hide: true }).then(({ folder }) => {
+    settle(hit, `Hidden from every search: ${hit.name}`, { id: hit.id, hide: false }, () => (folder.files < 2 ? [] : [
+      // The other rows are from a search that still had the folder in it, so it is run again.
+      plain(`Hide all ${folder.files.toLocaleString()} files in “${folder.name}”`, () => changeHidden('/api/hidden', { id: hit.id, hide: true, folder: true }).then(() => run()).catch(() => {})),
+    ]));
+  }).catch(() => {});
+}
+
+function unhide(hit) {
+  changeHidden('/api/hidden', { id: hit.id, hide: false })
+    .then(() => settle(hit, `Back in searches: ${hit.name}`, { id: hit.id, hide: true })).catch(() => {});
+}
+
+function hideButton(hit) {
+  const back = query?.kind === 'hidden';   // in the list of hidden files, the button brings one back
+  const label = back ? 'Show in searches again' : 'Hide from every search (H)';
+  const button = el('button', { className: 'hide', type: 'button', innerHTML: EYE_OFF, title: label, ariaLabel: label, ariaPressed: String(back) });
+  button.onclick = () => (back ? unhide(hit) : hide(hit));
+  return button;
+}
+
+function showHidden() {
+  const mine = ++ticket;
+  const { note, column } = listView('Hidden files', '', query.back);
+  fetch('/api/hidden').then((r) => r.json()).then((body) => {
+    if (mine !== ticket) return;
+    showHiddenCounts(body.counts);
+    if (!body.folders.length && !body.hits.length) { note.textContent = 'Nothing is hidden. The crossed-out eye on a result, or H, hides that file from every search.'; return; }
+    note.textContent = `${body.counts.files.toLocaleString()} files are left out of every search. They are only not shown: nothing has been moved or deleted.`;
+    if (body.folders.length) {
+      column.append(el('p', { className: 'set-head' }, 'Folders'), el('ul', { className: 'hits' }, ...body.folders.map((folder) => {
+        const line = el('li', { className: 'gone', title: folder.folder }, el('span', {}, `${folder.name}, ${folder.files.toLocaleString()} files`));
+        line.append(plain('Show again', () => changeHidden('/api/hidden', { show_folder: folder.folder })
+          .then(() => line.replaceChildren(el('span', {}, `Back in searches: ${folder.name}`))).catch(() => {})));
+        return line;
+      })));
+    }
+    if (!body.hits.length) return;
+    column.append(el('p', { className: 'set-head' }, `Hidden one by one${body.more ? `, the first ${body.hits.length}` : ''}`));
+    const list = el('ol', { className: 'hits' });
+    const items = body.hits.map((hit, i) => row(listed(hit), i + 1, null));
+    list.append(...items);
+    column.append(list);
+    waveforms(items);
+  }).catch(() => { if (mine === ticket) note.textContent = 'The search server is not responding. Start it again with "uv run audio-embed serve".'; });
+}
+
+// Songs are picked out by name and length alone, which is wrong now and then, so they are offered here rather than hidden.
+function showSongs() {
+  const mine = ++ticket;
+  const { note, column } = listView('Files that look like songs', '', query.back);
+  fetch('/api/songs').then((r) => r.json()).then((body) => {
+    if (mine !== ticket) return;
+    showHiddenCounts(body.counts);
+    const total = body.counts.songs;
+    if (!total) { note.textContent = 'No files look like songs now. The ones you hid are listed under "hidden" at the top.'; return; }
+    note.textContent = `${total.toLocaleString()} files over a minute long are named like songs ("Artist - Title.mp3", "Official Audio") or sit in a folder of songs. `
+      + 'The names are right about nine times in ten. Hide them all and bring back the odd one from the hidden files, or go through them here: '
+      + 'the crossed-out eye hides a file, and Not a song keeps it and stops it being suggested.'
+      + (body.more ? ` Showing the first ${body.hits.length}.` : '');
+    const all = plain(`Hide all ${total.toLocaleString()}`, () => changeHidden('/api/songs', { hide_all: true }).then(() => run()).catch(() => {}));
+    all.classList.add('hide-all');
+    column.append(el('p', { className: 'note' }, all));
+    const list = el('ol', { className: 'hits sorting' });
+    const items = body.hits.map((hit, i) => {
+      const item = row(listed(hit), i + 1, null);
+      const keepIt = item.querySelector('.like');
+      keepIt.textContent = 'Not a song';
+      keepIt.title = 'Keep this file in searches and stop suggesting it';
+      keepIt.onclick = () => changeHidden('/api/songs', { id: hit.id }).then(() => settled(item, `Kept in searches: ${hit.name}`)).catch(() => {});
+      return item;
+    });
+    list.append(...items);
+    column.append(list);
+    waveforms(items);
+  }).catch(() => { if (mine === ticket) note.textContent = 'The search server is not responding. Start it again with "uv run audio-embed serve".'; });
+}
+
 // ---------- generating variations of one file
 
 const DISTANCES = [['close', 'Close'], ['medium', 'Medium'], ['far', 'Far']];
@@ -1029,6 +1159,8 @@ function restore() {
   else if (params.get('like')) ask({ kind: 'like', id: Number(params.get('like')), name: params.get('name') || 'this file' });
   else if (params.get('collection')) ask({ kind: 'collection', name: params.get('collection') });
   else if (params.get('duplicates')) ask({ kind: 'duplicates' });
+  else if (params.get('hidden')) ask({ kind: 'hidden' });
+  else if (params.get('songs')) ask({ kind: 'songs' });
   else if (params.get('generate')) {
     if (MAKES.some(([value]) => value === params.get('make'))) gen.make = params.get('make');
     const clip = /^[0-9a-f]{16}$/.test(params.get('clip') || '') ? params.get('clip') : undefined;
@@ -1043,6 +1175,8 @@ function run() {
   if (stale) { stale = false; drawFilters(); }
   if (query.kind === 'collection') return showCollection();
   if (query.kind === 'duplicates') return showDuplicates();
+  if (query.kind === 'hidden') return showHidden();
+  if (query.kind === 'songs') return showSongs();
   if (query.kind === 'generate') return showGenerate();
   const mine = ++ticket;
   const main = $('main');
@@ -1090,6 +1224,7 @@ function start() {
   const keys = el('p', { className: 'keys' });
   keys.innerHTML = '<kbd>/</kbd> search &nbsp; <kbd>↑</kbd> <kbd>↓</kbd> audition the next result &nbsp; <kbd>space</kbd> play or pause &nbsp; <kbd>S</kbd> find similar<br>'
     + '<kbd>G</kbd> good match &nbsp; <kbd>B</kbd> bad match &nbsp; <kbd>K</kbd> keep in the collection &nbsp; <kbd>R</kbd> rank again by votes'
+    + (hideable ? ' &nbsp; <kbd>H</kbd> hide from every search' : '')
     + (canGenerate ? ' &nbsp; <kbd>N</kbd> generate from this<br><kbd>shift</kbd> <kbd>enter</kbd> in the search box: generate from that text' : '');
   $('main').replaceChildren(el('div', { className: 'start' }, el('p', {}, 'Describe a sound above, or pick one of your moods.'), keys));
 }
@@ -1153,7 +1288,7 @@ function voteButtons(hit) {
     button.onclick = () => vote(hit, verdict, button.closest('.hit'));
     return button;
   });
-  return el('span', { className: 'votes' }, ...thumbs, keepButton(hit));
+  return el('span', { className: 'votes' }, ...thumbs, keepButton(hit), ...(hideable ? [hideButton(hit)] : []));
 }
 
 // Plays the result before or after a row, in the same list.
@@ -1438,6 +1573,8 @@ $('seek').onclick = (e) => {
 };
 
 $('find-duplicates').onclick = () => ask({ kind: 'duplicates' });
+$('show-hidden').onclick = () => ask({ kind: 'hidden', back: searching() ? query : query?.back });
+$('show-songs').onclick = () => ask({ kind: 'songs', back: searching() ? query : query?.back });
 $('generate-text').onclick = () => ask({ kind: 'generate', text: $('q').value.trim(), back: searching() ? query : null });
 
 // ---------- keyboard
@@ -1482,15 +1619,24 @@ document.addEventListener('keydown', (e) => {
     const item = document.activeElement.closest?.('.hit') || document.querySelector('.hit.current');
     if (item) keep(item._hit);
   }
+  else if ((e.key === 'h' || e.key === 'H') && hideable && query?.kind !== 'hidden') {
+    const item = document.activeElement.closest?.('.hit') || document.querySelector('.hit.current');
+    if (item) hide(item._hit);
+  }
   else if ((e.key === 'r' || e.key === 'R') && steer && searching()) run();
   else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
     const here = document.activeElement.closest?.('.hits');
     const list = here || document.querySelector('.hit.current')?.closest('.hits') || document.querySelector('.hits');
     if (!list) return;
     e.preventDefault();
-    const buttons = [...list.querySelectorAll('.play')];
-    const at = buttons.indexOf(here ? document.activeElement.closest('.hit').querySelector('.play') : list.querySelector('.hit.current .play'));
-    const next = buttons[Math.max(0, Math.min(buttons.length - 1, at + (e.key === 'ArrowDown' ? 1 : -1)))];
+    // A row that was hidden is a line with no play button: the keys step over it, and carry on from it.
+    const lines = [...list.children];
+    const rows = lines.filter((line) => line.matches('.hit'));
+    const from = lines.indexOf(here ? document.activeElement.closest('li') : list.querySelector('.hit.current'));
+    const down = e.key === 'ArrowDown';
+    const beyond = from < 0 ? rows[0] : down ? rows.find((line) => lines.indexOf(line) > from) : rows.findLast((line) => lines.indexOf(line) < from);
+    const next = (beyond || (lines[from]?.matches('.hit') ? lines[from] : null))?.querySelector('.play');
+    if (!next) return;
     next.focus();
     next.scrollIntoView({ block: 'nearest' });
     next.click();
@@ -1502,6 +1648,7 @@ document.addEventListener('keydown', (e) => {
 fetch('/api/library').then((r) => r.json()).then((info) => {
   models = info.models;
   canGenerate = !!info.generator;
+  showHiddenCounts(info.hidden);
   $('deck-generate').hidden = $('generate-text').hidden = !canGenerate;
   const saved = recall('view');
   view = models.some((m) => m.name === saved) || (saved === 'both' && models.length > 1) ? saved : models.length > 1 ? 'both' : models[0]?.name;
