@@ -604,10 +604,12 @@ def create_app(db_path: Path) -> Starlette:
         return JSONResponse({"revealed": str(path)})
 
     def clip_json(story: dict) -> dict:
+        make = story.get("make", "variations")
+        # Only a variation of a sample or of a clip is near or far from something.
+        varied = make == "variations" and (story["key"] != generate.FROM_TEXT or story.get("parent"))
         return {
-            "id": story["clip"], "n": story["n"], "seconds": story["seconds"], "prompt": story["prompt"],
-            # A clip made from text alone has no sample to be near or far from.
-            "distance": None if story["key"] == generate.FROM_TEXT else story["distance"],
+            "id": story["clip"], "n": story["n"], "seconds": story.get("length", story["seconds"]),
+            "prompt": story["prompt"], "make": make, "distance": story["distance"] if varied else None,
             "kept": Path(story["kept"]).name if story.get("kept") else None,
         }
 
@@ -621,6 +623,11 @@ def create_app(db_path: Path) -> Starlette:
             model, matrix, position = found
             source, key = listed(matrix, model, [position])[0], matrix.paths[position]
         ready = generator.models()
+        # A clip of this view that the panel should work from in place of the file.
+        working_from, asked = None, request.query_params.get("clip")
+        if asked:
+            story = generator.story(asked)
+            working_from = clip_json(story) if story is not None and story["key"] == key else None
         return JSONResponse({
             "source": source,
             "clips": [clip_json(story) for story in generator.clips_from(key)],
@@ -628,38 +635,42 @@ def create_app(db_path: Path) -> Starlette:
             "problem": None if ready else generator.problem("medium"),
             "keeps_in": str(generator.keep_root) if generator.keep_root else None,
             "longest": generate.LONGEST_ASKED_S,
+            "working_from": working_from,
+            "gone": bool(asked) and working_from is None,
         })
 
     async def generate_start(request):
-        """Start making clips: {"id", "start", "prompt", "avoid", "distance", "count", ...}.
+        """Start making clips: {"id", "start", "prompt", "avoid", "distance", "count", "make", ...}.
 
-        With no "id" they are made from the prompt alone.
+        With "clip" they are made from that clip in the cache; with neither "id" nor "clip", from the prompt alone.
         """
         body = await request.json()
-        from_text = body.get("id") is None
+        clip_id = body.get("clip")
+        from_text = body.get("id") is None and not clip_id
         try:
-            found = None if from_text else library.entry(int(body["id"]))
+            found = None if from_text or clip_id else library.entry(int(body["id"]))
             start = float(body.get("start") or 0)
             ask = generate.ask_from(body)
         except (TypeError, ValueError) as e:
             return error(str(e), 400)
-        if found is None and not from_text:
+        if found is None and not from_text and not clip_id:
             return error("That file is not in the index.", 400)
         why = generator.problem(ask.model)
         if why:
             return error(why, 409)
-        if from_text:
-            try:
+        try:
+            if clip_id:
+                return JSONResponse({"run": generator.start_from_clip(str(clip_id), ask)})
+            if from_text:
                 return JSONResponse({"run": generator.start_from_text(ask)})
-            except ValueError as e:
-                return error(str(e), 400)
-        _, matrix, position = found
-        path = Path(matrix.paths[position])
-        _, source = library.heard_from(path)
-        if source is None:
-            return error("The original is online-only and its render is not within reach, so there is nothing to generate from.", 409)
-        run = generator.start(source, str(path), path.stem, matrix.durations[position], start, ask)
-        return JSONResponse({"run": run})
+            _, matrix, position = found
+            path = Path(matrix.paths[position])
+            _, source = library.heard_from(path)
+            if source is None:
+                return error("The original is online-only and its render is not within reach, so there is nothing to generate from.", 409)
+            return JSONResponse({"run": generator.start(source, str(path), path.stem, matrix.durations[position], start, ask)})
+        except ValueError as e:
+            return error(str(e), 400)
 
     def generate_progress(request):
         progress = generator.progress(request.path_params["run"])
