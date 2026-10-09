@@ -10,6 +10,27 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-08-inpainting-design.md`
 
+## Listening results (Task 2)
+
+**Verdict of 2026-10-09: part, loop and longer are all built.** They pass on sustained sounds (a drone, an ambience). Longer does not work on sparse events (doors in a quiet room): the new material is garble. Part and loop were not really tested on events, because the stretches redone in the doors file were room tone.
+
+First probe: the first 20 seconds of three files, no prompt, seed 1, medium and small sfx models.
+
+- **Longer, drone, medium:** the new 10 seconds change in vibe from the start. The user likes the result, but it is a different sound.
+- **Longer, ambience, medium:** the texture changes suddenly at the end.
+- **Longer, ambience, small:** closer to the original than medium, with more artifacts.
+- **Third file (kettle, a raw geophone recording of knocking and noise):** not a useful example. Replace it before judging anything on it.
+- **Part and loop:** "sounded good" on the drone and the ambience, both models. Not yet heard on a file with clear events.
+
+Second probe, medium model only: Longer on the drone and the ambience with three seeds, a prompt, 60 seconds of the file, and both; part, loop and Longer on `Foley/Doors/Hurðir inná litlasviði.wav` in place of the kettle. Each file is 20 seconds of the original and 10 seconds of new material.
+
+- **Longer, drone:** all six are fine, "a bit thinner than the original" (they measure about 3 dB quieter). Seed 3 is the best of the three without a prompt. With a prompt is the most realistic continuation. The two made from 60 seconds are liked as well.
+- **Longer, ambience:** all six are "believable and usable". The three seeds each go somewhere different (seed 1 evolves somewhere new, seed 2 turns softer, seed 3 is more subdued), and the user likes that as an evolution. With a prompt there is less going on, and it works as a way to fade the file out. The two made from 60 seconds are the best: "complex texture and usable".
+- **Part and loop, doors:** silent at the edit and at the loop point. The original is room tone in both places (about -55 dB), so that is what was there, and the test says nothing about an edit across an event.
+- **Longer, doors:** garble without a prompt; less so from 60 seconds with a prompt, still unusable.
+
+What this means for the build: nothing in the plan changes. Sending up to 60 seconds of the file (already the plan) gave the best continuations, and seeds differ enough that Count matters.
+
 ## Global Constraints
 
 - The audio library is read-only and is read only through ffmpeg/ffprobe (`generate.cut`). All arithmetic happens on WAV files in a scratch folder.
