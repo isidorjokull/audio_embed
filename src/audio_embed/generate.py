@@ -40,6 +40,14 @@ TEXT_SECONDS = 10.0
 FROM_TEXT = "text"
 # How much noise the sample is buried in before the model rebuilds it: the more, the further the clip drifts.
 DISTANCES = {"close": 0.4, "medium": 0.6, "far": 0.8}
+# What a run makes: whole new clips, or one stretch of the sample made anew (see splice.py).
+MAKES = ("variations", "part", "loop", "longer")
+# How many seconds a loop's join replaces, half of it at each end of the clip.
+JOINS = {"short": 1.0, "medium": 2.0, "long": 4.0}
+# The shortest part that can be redone, and how much of a passage a part must leave alone.
+SHORTEST_PART_S = 0.2
+MIN_KEPT_S = 1.0
+MIN_LOOP_S = 2.0
 # Our name for a model -> Stable Audio 3's names for it and for the codec it needs.
 MODELS = {"medium": ("medium", "same-l"), "sfx": ("sm-sfx", "same-s"), "music": ("sm-music", "same-s")}
 WEIGHTS = {
@@ -65,6 +73,11 @@ class Ask:
     count: int = 4
     seconds: float | None = None  # None: as long as the sample, up to LONGEST_S
     model: str = "medium"
+    make: str = "variations"
+    span: tuple[float, float] | None = None  # the part to redo, in seconds in the sample
+    marker: float | None = None  # where new sound takes over, for longer; None: the end of the sample
+    join: str = "medium"
+    add: float = 30.0  # seconds of new sound, for longer
 
 
 def ask_from(body: dict) -> Ask:
@@ -93,7 +106,29 @@ def ask_from(body: dict) -> Ask:
     avoid = text("avoid")
     if avoid and strength <= 1:
         strength = AVOID_STRENGTH
-    return Ask(text("prompt"), avoid, distance, strength, count, seconds, model)
+    make, join = body.get("make", "variations"), body.get("join", "medium")
+    if make not in MAKES:
+        raise ValueError(f"What to make must be one of: {', '.join(MAKES)}.")
+    if join not in JOINS:
+        raise ValueError(f"The join must be one of: {', '.join(JOINS)}.")
+    try:
+        add = float(body.get("add", 30.0))
+        span = None if body.get("span") is None else (float(body["span"][0]), float(body["span"][1]))
+        marker = None if body.get("marker") in (None, "") else float(body["marker"])
+    except (TypeError, ValueError, IndexError, KeyError):
+        raise ValueError("The part, the marker and the length to add must be numbers.") from None
+    if make == "part":
+        if span is None:
+            raise ValueError("Mark the part to redo on the waveform first.")
+        if not 0 <= span[0] < span[1]:
+            raise ValueError("The part must start before it ends.")
+        if span[1] - span[0] < SHORTEST_PART_S:
+            raise ValueError(f"A part must be at least {SHORTEST_PART_S:g} seconds long.")
+    if make == "longer" and not 1 <= add <= LONGEST_ASKED_S - MIN_KEPT_S:
+        raise ValueError(f"Between 1 and {LONGEST_ASKED_S - MIN_KEPT_S:g} seconds can be added.")
+    if marker is not None and not marker > 0:
+        raise ValueError("The marker must be after the start of the sample.")
+    return Ask(text("prompt"), avoid, distance, strength, count, seconds, model, make, span, marker, join, add)
 
 
 def passage(duration: float, matched_at: float, asked: float | None = None) -> tuple[float, float]:

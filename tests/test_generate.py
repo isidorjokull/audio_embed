@@ -403,3 +403,36 @@ def test_a_kept_clip_made_from_text_is_named_and_described_by_its_prompt(tmp_pat
     seed = gen.story(clip["id"])["seed"]
     assert described == f"Generated from text. Prompt: dark low drone. Model: Stable Audio 3 medium. Seed: {seed}."
     assert generate.kept_name("", "dark low drone", {"Dark Low Drone 1.wav"}) == "dark low drone 2.wav"
+
+
+def test_a_request_says_what_to_make_and_where():
+    ask = generate.ask_from({"make": "part", "span": [3, "4.5"], "prompt": "bells"})
+    assert (ask.make, ask.span, ask.prompt) == ("part", (3.0, 4.5), "bells")
+    assert generate.ask_from({"make": "loop", "join": "long"}).join == "long"
+    longer = generate.ask_from({"make": "longer", "add": 10, "marker": 7.5})
+    assert (longer.add, longer.marker) == (10.0, 7.5)
+    assert generate.ask_from({"make": "longer"}).marker is None   # the end of the sample
+    plain = generate.ask_from({})
+    assert (plain.make, plain.span, plain.marker, plain.join, plain.add) == ("variations", None, None, "medium", 30.0)
+
+
+@pytest.mark.parametrize("body, says", [
+    ({"make": "remix"}, "What to make"),
+    ({"make": "loop", "join": "huge"}, "The join"),
+    ({"make": "part"}, "Mark the part"),
+    ({"make": "part", "span": [5, 5]}, "start before it ends"),
+    ({"make": "part", "span": [5, 4]}, "start before it ends"),
+    ({"make": "part", "span": [-1, 4]}, "start before it ends"),
+    ({"make": "part", "span": [1, 1.1]}, "at least 0.2 seconds"),
+    ({"make": "part", "span": ["x", 4]}, "must be numbers"),
+    ({"make": "part", "span": [4]}, "must be numbers"),
+    ({"make": "part", "span": [float("nan"), 4]}, "start before it ends"),
+    ({"make": "longer", "add": 0}, "Between 1 and 119"),
+    ({"make": "longer", "add": 500}, "Between 1 and 119"),
+    ({"make": "longer", "add": float("nan")}, "Between 1 and 119"),
+    ({"make": "longer", "marker": 0}, "after the start"),
+    ({"make": "longer", "marker": float("nan")}, "after the start"),
+])
+def test_a_request_for_a_part_a_loop_or_more_is_checked(body, says):
+    with pytest.raises(ValueError, match=says):
+        generate.ask_from(body)
