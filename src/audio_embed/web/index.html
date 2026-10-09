@@ -747,7 +747,7 @@ const GEN_MODELS = { medium: 'Medium', sfx: 'Small, sound effects', music: 'Smal
 const STRENGTHS = [[1, 'Normal'], [3, 'Strong'], [5, 'Very strong']];
 const MAKES = [['variations', 'Variations'], ['part', 'Redo a part'], ['loop', 'Loop'], ['longer', 'Longer']];
 const JOINS = [['short', 'Short'], ['medium', 'Medium'], ['long', 'Long']];
-const ADDS = [[10, '10 s'], [30, '30 s'], [60, '1 min']];
+const ADDS = [[10, '10 s'], [30, '30 s'], [60, '1 min'], [100, '100 s']];
 // What a clip's row is called by what was made.
 const MADE = { part: 'Redone', loop: 'Loop', longer: 'Longer' };
 const SAMPLE_LONGEST = 60;   // a clip is as long as its sample up to this, unless a length is picked
@@ -890,6 +890,7 @@ function showGenerate() {
     const join = genChoice('Join', JOINS, 'join');
     join.title = 'How much of the end and the start is made anew so that they meet: 1, 2 or 4 seconds.';
     const adds = genChoice('Add', ADDS, 'add');
+    adds.title = 'How much new sound. A clip is at most 2 minutes, so the more is added, the less of the sample comes before it: 20 seconds with 100.';
     const lengths = genChoice('Length', CLIP_LENGTHS, 'seconds', showSample);
     const hint = el('span', { className: 'gen-hint' });
     // Each choice of what to make has its own rows; the rest are put away.
@@ -900,7 +901,7 @@ function showGenerate() {
       lengths.hidden = gen.make === 'part' || gen.make === 'longer';
       hint.textContent = {
         part: 'Drag on the waveform above to mark the part to redo.',
-        longer: 'New sound follows on from the end. Click the waveform above to start it earlier, before a fade.',
+        longer: 'New sound follows on from the end. Click the waveform above to start it earlier, before a fade. A prompt that names the sound keeps it closer; without one a long addition wanders.',
       }[gen.make] || '';
       showSample();
     };

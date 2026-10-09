@@ -31,6 +31,17 @@ Second probe, medium model only: Longer on the drone and the ambience with three
 
 What this means for the build: nothing in the plan changes. Sending up to 60 seconds of the file (already the plan) gave the best continuations, and seeds differ enough that Count matters.
 
+Third probe, after the user said "I usually need long files to work with for pads and textures": the same 20 seconds of the drone and the ambience grown to 2 minutes, medium model, seed 1.
+
+- **Drone, in one go, no prompt:** not a continuation. Stings appear, a beat builds, and from about 1 minute it is an orchestral score; at 1:41 orchestral drums layered on the sample. The user likes it and finds it useful, but it is "a big jump" and "not very based on my sounddesign".
+- **Drone, in one go, with a prompt:** "adheres very well". Very similar up to 1 minute, then the mood shifts, consistently. "Very usable."
+- **Drone, in two steps (to 1 minute, then to 2), no prompt:** "loses the plot completely". Dramatic orchestra from 0:29 to 0:51, a new orchestral version at 1 minute.
+- **Ambience, in one go, no prompt:** a texture that continues and evolves a good deal; liked. Some high-end artifacts after 1 minute and subtle drum hits that feel relevant.
+- **Ambience, in one go, with a prompt:** adheres a bit more, with less dramatic changes. "Overall excellent."
+- **Ambience, in two steps, no prompt:** cohesive, more evolution than with a prompt, but a sudden silence at 1 minute before it gets going again. Some high-frequency artifacts.
+
+What this means: over 2 minutes it is the prompt that keeps new sound a continuation; without one a drone turns into music. Two steps were no better than one go (worse on the drone, a gap on the ambience), so nothing is chained. The page's Add gained a 100 second choice (20 seconds of the sample and 100 of new sound is what was heard here), and the hint for Longer says what a prompt does.
+
 ## Global Constraints
 
 - The audio library is read-only and is read only through ffmpeg/ffprobe (`generate.cut`). All arithmetic happens on WAV files in a scratch folder.
@@ -40,7 +51,7 @@ What this means for the build: nothing in the plan changes. Sending up to 60 sec
 - Tests load no models and must stay fast: `uv run pytest -q`.
 - Stable Audio 3 is given at most 60 seconds (`LONGEST_S`), 120 when a length is asked for (`LONGEST_ASKED_S`).
 - Join lengths: Short 1 s, Medium 2 s, Long 4 s, half at each end; at most half the clip. A loop needs at least 2 seconds.
-- Add lengths on the page: 10, 30, 60 seconds. Passage and new material together are at most 120 seconds.
+- Add lengths on the page: 10, 30, 60 seconds (100 was added after the third listening probe). Passage and new material together are at most 120 seconds.
 - A redone part is at least 0.2 seconds and leaves at least 1 second of the passage untouched.
 - One step of Stable Audio 3 is 4096 samples at 44.1 kHz. Crossfades are 30 ms (1323 samples).
 - Clips are 44.1 kHz, 16-bit, stereo WAV, as now.

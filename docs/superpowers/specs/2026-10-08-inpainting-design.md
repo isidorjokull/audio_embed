@@ -26,7 +26,7 @@ view does today.
 - **Loop**: the end and the start are made anew so that the clip repeats without a seam.
   **Join** says how much is replaced: Short, Medium or Long (1, 2 or 4 seconds, half of it at
   each end).
-- **Longer**: new material follows on from the sample. **Add** says how much: 10, 30 or 60
+- **Longer**: new material follows on from the sample. **Add** says how much: 10, 30, 60 or 100
   seconds. A marker on the waveform says where the new material takes over. It starts at the
   end of the file and can be pulled back, because most samples end in a fade and there is
   nothing to follow on from in silence.
