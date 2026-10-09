@@ -143,7 +143,8 @@ def passage(duration: float, matched_at: float, asked: float | None = None) -> t
     search matched, pulled back if it would run past the end.
     """
     seconds = min(duration, asked or LONGEST_S)
-    start = 0.0 if seconds >= duration else min(matched_at, duration - seconds)
+    # Written so that a start that is not a number counts as the start of the sample.
+    start = 0.0 if seconds >= duration else min(max(0.0, matched_at), duration - seconds)
     return float(start), float(seconds)
 
 
@@ -392,14 +393,17 @@ class Generator:
         seconds = ask.seconds or TEXT_SECONDS
         return self._queue_run(None, FROM_TEXT, "", Plan(0.0, seconds, True, None, 0.0, seconds), ask)
 
-    def start_from_clip(self, clip_id: str, ask: Ask) -> str:
-        """Queue a run whose sample is a clip in the cache. Its clips are filed with the clip they came from."""
+    def start_from_clip(self, clip_id: str, ask: Ask, start_s: float = 0.0) -> str:
+        """Queue a run whose sample is a clip in the cache. Its clips are filed with the clip they came from.
+
+        `start_s` is where in the clip the passage starts when the clip is longer than the passage.
+        """
         clip, story = self.clip(clip_id), self.story(clip_id)
         if clip is None or story is None:
             raise ValueError("That clip is no longer in the cache. Generate it again.")
         with wave.open(str(clip), "rb") as f:
             duration = f.getnframes() / f.getframerate()
-        return self._queue_run(clip, story["key"], story["name"], plan(duration, 0.0, ask), ask, parent=describe(story))
+        return self._queue_run(clip, story["key"], story["name"], plan(duration, start_s, ask), ask, parent=describe(story))
 
     def _queue_run(self, source: Path | None, key: str, name: str, shape: Plan, ask: Ask, parent: str | None = None) -> str:
         run = {

@@ -660,7 +660,7 @@ def create_app(db_path: Path) -> Starlette:
             return error(why, 409)
         try:
             if clip_id:
-                return JSONResponse({"run": generator.start_from_clip(str(clip_id), ask)})
+                return JSONResponse({"run": generator.start_from_clip(str(clip_id), ask, start)})
             if from_text:
                 return JSONResponse({"run": generator.start_from_text(ask)})
             _, matrix, position = found

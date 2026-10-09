@@ -199,7 +199,10 @@ uv run audio-embed generator                                                    
 - Every clip row has **Work from this**, which makes that clip the sample: loop a variation or
   make a clip from text longer before keeping anything.
 - Clips appear under the panel as they are made, a few seconds each. From a long file they are
-  made from the passage your search matched, a minute of it unless you pick another length.
+  made from one passage, highlighted on the sample's waveform: a minute from where your search
+  matched unless you pick another length. Drag it to choose another passage. For Longer the
+  highlighted stretch is what the new sound follows on from (the minute before the marker, less
+  when more is added: a clip is at most two minutes), and for a part it is the minute around it.
 - **Generate from text**, next to the file count, makes clips from a description alone: whatever
   is in the search box becomes the prompt, and you pick a length and a model.
 - A new clip is temporary. **Keep** saves it as a WAV in the folder you named, with a comment

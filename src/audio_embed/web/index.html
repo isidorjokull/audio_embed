@@ -317,7 +317,7 @@ const peaks = new Map();
 let canGenerate = false; // Stable Audio 3 has been set up, so files can be generated from
 // What the generate panel is set to. Kept while the page is open, so the next file starts from the same settings.
 const gen = { prompt: '', avoid: '', distance: 'medium', more: false, count: 4, seconds: '', textSeconds: 10, model: 'medium', strength: 1,
-  make: 'variations', join: 'medium', add: 30, span: null, marker: null, of: null };
+  make: 'variations', join: 'medium', add: 30, span: null, marker: null, of: null, from: 0, running: null };
 
 function el(tag, props = {}, ...children) {
   const node = Object.assign(document.createElement(tag), props);
@@ -752,10 +752,21 @@ const ADDS = [[10, '10 s'], [30, '30 s'], [60, '1 min'], [100, '100 s']];
 const MADE = { part: 'Redone', loop: 'Loop', longer: 'Longer' };
 const SAMPLE_LONGEST = 60;   // a clip is as long as its sample up to this, unless a length is picked
 
-// The part of the sample the clips are made from: all of it, or a stretch from where it matched.
-function genPassage(duration, at) {
+// The passage of the sample a run is made from, [start, seconds], chosen as the server chooses it:
+// around a part, back from the marker for Longer, and otherwise all of it or a stretch from `at`.
+function genPassage(duration, at, longest) {
+  if (gen.make === 'part') {
+    if (!gen.span) return [0, duration];
+    const seconds = Math.min(duration, SAMPLE_LONGEST), middle = (gen.span[0] + Math.min(gen.span[1], duration)) / 2;
+    return [Math.min(Math.max(0, middle - seconds / 2), duration - seconds), seconds];
+  }
+  if (gen.make === 'longer') {
+    const marker = Math.min(gen.marker ?? duration, duration);
+    const seconds = Math.min(marker, SAMPLE_LONGEST, longest - gen.add);
+    return [marker - seconds, seconds];
+  }
   const seconds = Math.min(duration, gen.seconds || SAMPLE_LONGEST);
-  return seconds >= duration ? [0, duration] : [Math.min(at, duration - seconds), seconds];
+  return seconds >= duration ? [0, duration] : [Math.max(0, Math.min(at, duration - seconds)), seconds];
 }
 
 // One choice of a few. A pick is shown in place, so the panel is never rebuilt while a prompt is being typed.
@@ -804,37 +815,47 @@ function keepClipButton(hit) {
   return button;
 }
 
-// Marking on the sample's waveform: a drag marks the part to redo, and for Longer a click
-// sets where new sound takes over. A plain click on a part still plays from there.
-function markOn(item) {
-  if (gen.make !== 'part' && gen.make !== 'longer') return;
+// Marking on the sample's waveform. A drag marks the part to redo, or moves the passage that variations
+// and a loop are made from; for Longer a click sets where new sound takes over. A plain click still plays.
+// `passage` gives the passage a run would use now, and `moveTo` is told where a moved one starts.
+function markOn(item, passage, moveTo) {
   const canvas = item.querySelector('canvas'), hit = item._hit;
   const play = canvas.onclick;
   const at = (e) => {
     const box = canvas.getBoundingClientRect();
     return Math.round(Math.max(0, Math.min(1, (e.clientX - box.left) / box.width)) * hit.duration * 100) / 100;
   };
-  let from = null, dragged = false;
-  canvas.style.cursor = gen.make === 'part' ? 'crosshair' : 'col-resize';
+  const show = () => {
+    item.querySelector('.at').textContent = hit.duration > hit.window * 1.05 ? `uses from ${clock(hit.start)}` : '';
+    draw(item);
+  };
+  const place = () => { [hit.start, hit.window] = passage(); show(); };
+  const moves = gen.make === 'variations' || gen.make === 'loop';
+  const movable = () => moves && hit.duration > hit.window * 1.05;
+  let from = null, grip = 0, dragged = false;
+  canvas.style.cursor = gen.make === 'part' ? 'crosshair' : gen.make === 'longer' ? 'col-resize' : movable() ? 'grab' : '';
   canvas.onpointerdown = (e) => {
-    if (gen.make !== 'part') return;
+    if (gen.make === 'longer' || (moves && !movable())) return;
     from = at(e);
+    // Held inside the passage, it moves from there; held outside, its middle comes to the pointer.
+    grip = from >= hit.start && from <= hit.start + hit.window ? from - hit.start : hit.window / 2;
     dragged = false;
     canvas.setPointerCapture(e.pointerId);
+    e.preventDefault();   // a drag that leaves the waveform selects no text
   };
   canvas.onpointermove = (e) => {
     if (from == null) return;
     const to = at(e);
-    if ((Math.abs(to - from) / hit.duration) * canvas.clientWidth < 4) return;   // a click that wobbled
+    if (!dragged && (Math.abs(to - from) / hit.duration) * canvas.clientWidth < 4) return;   // a click that wobbled
     dragged = true;
-    gen.span = hit.part = [Math.min(from, to), Math.max(from, to)];
-    draw(item);
+    if (moves) { hit.start = Math.max(0, Math.min(hit.duration - hit.window, Math.round((to - grip) * 10) / 10)); show(); }
+    else { gen.span = hit.part = [Math.min(from, to), Math.max(from, to)]; place(); }
   };
-  canvas.onpointerup = () => { from = null; };
+  canvas.onpointerup = () => { if (from != null && dragged && moves) moveTo(hit.start); from = null; };
   canvas.onpointercancel = () => { from = null; };
   canvas.onclick = (e) => {
     if (dragged) { dragged = false; return; }   // the click that ends a drag
-    if (gen.make === 'longer') { gen.marker = hit.marker = Math.max(1, at(e)); draw(item); return; }
+    if (gen.make === 'longer') { gen.marker = hit.marker = Math.max(1, at(e)); place(); return; }
     play(e);
   };
 }
@@ -857,18 +878,20 @@ function showGenerate() {
     const base = working ? clipHit(working, body.clips.findIndex((clip) => clip.id === working.id) + 1 || working.n) : body.source;
     const noSample = fromText && !working;
     const of = working ? working.id : query.id;
-    if (gen.of !== of) { gen.of = of; gen.span = null; gen.marker = null; }   // a part belongs to one sample
+    if (gen.of !== of) { gen.of = of; gen.span = null; gen.marker = null; gen.from = 0; }   // a part belongs to one sample
     if (noSample) gen.make = 'variations';
     const origin = el('p', { className: 'note wide', hidden: !working && !body.gone });
     if (working) origin.append(`Working from ${base.name}, a clip that has not been kept. `, plain(fromText ? 'Back to the text' : 'Back to the file', () => ask({ ...query, clip: undefined })));
     else if (body.gone) origin.textContent = 'That clip is no longer in the cache, so this is what it was made from.';
 
-    // The sample itself, with the passage the clips will be made from marked on it.
+    // The sample itself, with the passage the clips will be made from marked on it. The passage of a file
+    // starts where the search matched and is kept in the address; that of a clip being worked from is not.
     const sample = el('ol', { className: 'hits' });
+    const passage = () => genPassage(base.duration, working ? gen.from : query.start || 0, body.longest);
+    const moveTo = (start) => { if (working) gen.from = start; else { query.start = start; keepAddress(); } };
     const showSample = () => {
       if (noSample) return;
-      const whole = gen.make === 'part' || gen.make === 'longer';   // these choose their own passage
-      const [from, seconds] = whole ? [0, base.duration] : genPassage(base.duration, working ? 0 : query.start || 0);
+      const [from, seconds] = passage();
       const item = row(listed({ ...base }, {
         start: from, window: seconds, at: 'uses from',
         part: gen.make === 'part' ? gen.span : null,
@@ -876,7 +899,7 @@ function showGenerate() {
       }), 1, null);
       sample.replaceChildren(item);
       waveforms([item]);
-      markOn(item);
+      markOn(item, passage, moveTo);
     };
 
     const clips = el('ol', { className: 'hits' });
@@ -889,9 +912,9 @@ function showGenerate() {
     far.title = 'How far the clips may drift from the sample.';
     const join = genChoice('Join', JOINS, 'join');
     join.title = 'How much of the end and the start is made anew so that they meet: 1, 2 or 4 seconds.';
-    const adds = genChoice('Add', ADDS, 'add');
+    const adds = genChoice('Add', ADDS, 'add', showSample);
     adds.title = 'How much new sound. A clip is at most 2 minutes, so the more is added, the less of the sample comes before it: 20 seconds with 100.';
-    const lengths = genChoice('Length', CLIP_LENGTHS, 'seconds', showSample);
+    const lengths = genChoice('Length', CLIP_LENGTHS, 'seconds', () => fit());
     const hint = el('span', { className: 'gen-hint' });
     // Each choice of what to make has its own rows; the rest are put away.
     const fit = () => {
@@ -899,10 +922,11 @@ function showGenerate() {
       join.hidden = gen.make !== 'loop';
       adds.hidden = gen.make !== 'longer';
       lengths.hidden = gen.make === 'part' || gen.make === 'longer';
+      const stretch = !noSample && base.duration > passage()[1] * 1.05;   // there is more sample than passage
       hint.textContent = {
         part: 'Drag on the waveform above to mark the part to redo.',
-        longer: 'New sound follows on from the end. Click the waveform above to start it earlier, before a fade. A prompt that names the sound keeps it closer; without one a long addition wanders.',
-      }[gen.make] || '';
+        longer: 'New sound follows on from the highlighted stretch. Click the waveform above to end it earlier, before a fade. A prompt that names the sound keeps it closer; without one a long addition wanders.',
+      }[gen.make] || (stretch ? 'Drag the highlighted stretch on the waveform above to choose the passage the clips are made from.' : '');
       showSample();
     };
     const makes = genChoice('Make', MAKES, 'make', () => { fit(); keepAddress(); });
@@ -935,7 +959,7 @@ function showGenerate() {
 
     const follow = (run) => fetch(`/api/generate/${run}`).then(async (r) => ({ ok: r.ok, body: await r.json() })).then(({ ok, body: progress }) => {
       if (mine !== ticket) return;
-      if (!ok) { says.textContent = progress.error; go.disabled = false; return; }
+      if (!ok) { says.textContent = progress.error; go.disabled = false; gen.running = null; return; }
       progress.clips.filter((clip) => clip.state === 'done').forEach((clip) => add({ ...clip, prompt: gen.sent.prompt, distance: gen.sent.distance, make: gen.sent.make }));
       const made = progress.clips.filter((clip) => clip.state === 'done').length;
       const failed = progress.clips.filter((clip) => clip.state === 'failed');
@@ -945,6 +969,7 @@ function showGenerate() {
         return;
       }
       go.disabled = false;
+      gen.running = null;
       says.textContent = failed.length ? `${made} made, ${failed.length} failed: ${failed[0].error}` : `${made} made. Keep the ones you want; the rest are cleared out later.`;
     }).catch(() => { if (mine === ticket) { says.textContent = 'The search server is not responding.'; go.disabled = false; } });
 
@@ -953,16 +978,19 @@ function showGenerate() {
       go.disabled = true;
       says.textContent = 'Starting';
       const varied = !noSample && gen.make === 'variations';
+      const filed = query.id ?? 'text';
       gen.sent = { prompt: gen.prompt.trim().replace(/\s+/g, ' '), distance: varied ? gen.distance : null, make: gen.make };
       fetch('/api/generate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(noSample
           ? { prompt: gen.prompt, avoid: gen.avoid, count: gen.count, seconds: gen.textSeconds, model: gen.model, strength: gen.strength }
-          : { ...(working ? { clip: working.id } : { id: query.id, start: query.start || 0 }),
+          : { ...(working ? { clip: working.id, start: gen.from } : { id: query.id, start: query.start || 0 }),
             make: gen.make, span: gen.make === 'part' ? gen.span : null, marker: gen.make === 'longer' ? gen.marker : null,
             join: gen.join, add: gen.add, prompt: gen.prompt, avoid: gen.avoid, distance: gen.distance,
             count: gen.count, seconds: gen.seconds || null, model: gen.model, strength: gen.strength }),
       }).then(async (r) => ({ ok: r.ok, body: await r.json() })).then(({ ok, body: started }) => {
+        // Remembered beyond this view: choosing a clip to work from rebuilds it while the run goes on.
+        if (ok) gen.running = { run: started.run, filed };
         if (mine !== ticket) return;
         if (!ok) { says.textContent = started.error; go.disabled = false; return; }
         follow(started.run);
@@ -975,7 +1003,8 @@ function showGenerate() {
       return;
     }
     else column.append(origin, sample, panel, clips);
-    if (!body.keeps_in) says.textContent = 'No folder has been chosen for kept clips yet, so clips can be made but not kept. Run "audio-embed generator --keep-in FOLDER" once.';
+    if (gen.running && gen.running.filed === (query.id ?? 'text')) { go.disabled = true; says.textContent = 'Making'; follow(gen.running.run); }
+    else if (!body.keeps_in) says.textContent = 'No folder has been chosen for kept clips yet, so clips can be made but not kept. Run "audio-embed generator --keep-in FOLDER" once.';
     panel.querySelector('input').focus();
   }).catch(() => { if (mine === ticket) note.textContent = 'The search server is not responding. Start it again with "uv run audio-embed serve".'; });
 }

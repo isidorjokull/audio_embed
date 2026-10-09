@@ -103,6 +103,8 @@ def made(gen, source, ask=Ask(count=1), start_s=0.0, duration=2.0):
     (100.0, 90.0, None, (40.0, 60.0)),    # pulled back so the minute fits before the end
     (600.0, 200.0, 20.0, (200.0, 20.0)),  # an asked-for length
     (11.3, 0.0, 20.0, (0.0, 11.3)),       # never longer than the sample
+    (600.0, -5.0, None, (0.0, 60.0)),     # never before the start
+    (600.0, float("nan"), None, (0.0, 60.0)),
 ])
 def test_passage_is_the_sample_or_a_minute_from_where_it_matched(duration, matched_at, asked, want):
     assert generate.passage(duration, matched_at, asked) == want
@@ -771,3 +773,17 @@ def test_a_kept_clip_with_no_prompt_is_named_by_what_was_made(tmp_path):
     write_wav(source, seconds=4.0, sr=44100, channels=2)
     (clip,) = made(gen, source, Ask(count=1, make="loop"), duration=4.0)
     assert gen.keep(clip["id"]).name == "tone - loop 1.wav"
+
+
+def test_a_run_from_a_clip_can_use_a_later_passage_of_it(tmp_path):
+    calls = []
+    gen = generator(tmp_path, run=stand_in(calls))
+    source = tmp_path / "tone.wav"
+    write_wav(source, seconds=4.0, sr=44100, channels=2)
+    (first,) = made(gen, source, duration=4.0)
+    (second,) = finished(gen, gen.start_from_clip(first["id"], Ask(count=1, seconds=1.0), start_s=2.5))
+    assert second["state"] == "done"
+    story = gen.story(second["id"])
+    assert (story["start_s"], story["seconds"], story["whole"]) == (2.5, 1.0, False)
+    past = gen.story(finished(gen, gen.start_from_clip(first["id"], Ask(count=1, seconds=1.0), start_s=99.0))[0]["id"])
+    assert past["start_s"] == 3.0   # pulled back to fit, as in a file
